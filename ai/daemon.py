@@ -55,7 +55,8 @@ def _load_or_create_token():
 TOKEN = _load_or_create_token()
 
 # 원격(serve 경유) 허용 계정 — Tailscale이 위조 불가하게 박아주는 본인 로그인
-ALLOWED_LOGINS = {"me@example.com"}
+# 환경변수 COMET_ALLOWED_LOGINS 에 쉼표로 구분해 넣는다 (예: me@example.com)
+ALLOWED_LOGINS = {e.strip() for e in os.environ.get("COMET_ALLOWED_LOGINS", "").split(",") if e.strip()}
 
 
 WEB_UI = """<!doctype html>
