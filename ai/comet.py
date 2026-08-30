@@ -49,6 +49,56 @@ GEN_TIMEOUT      = 180             # 초. 한 호출이 이보다 오래 무응�
 _client = ollama.Client(timeout=GEN_TIMEOUT)
 
 
+# ── 임시조치: 설치 안 된 모델이면 있는 걸로 갈아탄다 (2026-08-31) ──────────
+#  ★왜 넣었나: 옛 모델(gemma3·qwen3)을 지운 뒤에도 코드에 이름이 남아 있어서
+#    문지기 첫 호출에서 COMET 전체가 죽었다. `llm.py` 에는 `_resolve_local()` 이
+#    있는데 여기엔 없어서, 없는 모델 이름을 ollama 에 그대로 넘기고 있었다.
+#  ⚠️ **임시다. 제대로 고칠 것.** 아무 모델이나 잡으면 등급 설계(가벼운 잡담 vs
+#    신중한 큰 작업)가 소리 없이 무너진다 — light 자리에 31b 가 들어앉아도
+#    "느리네" 말고는 티가 안 난다. 제대로 된 건 등급마다 후보 목록을 설정에서
+#    받는 것(`llm.py` 의 `local_fallbacks` 처럼). 지금은 **죽지는 않게** 까지만 한다.
+#    그래서 대체할 때마다 콘솔에 크게 찍는다 — 조용히 굴러가면 안 되는 상태다.
+_ALIAS = {}          # 없는 이름 -> 실제로 쓴 이름. 한 번 정하면 그 세션 내내 같은 걸 쓴다
+_INSTALLED = None    # ollama.list() 는 한 번만 (매 호출마다 물어보면 느리다)
+
+
+def _installed():
+    global _INSTALLED
+    if _INSTALLED is None:
+        try:
+            data = _client.list()
+            _INSTALLED = [m.get("model") or m.get("name") or ""
+                          for m in data.get("models", [])]
+            _INSTALLED = [x for x in _INSTALLED if x]
+        except Exception:
+            _INSTALLED = []          # 못 물어보면 폴백 없이 원래 이름으로 간다
+    return _INSTALLED
+
+
+def _resolve(model):
+    """설치돼 있으면 그대로. 없으면 같은 계열 → 아무 대화모델 순으로 갈아탄다."""
+    if not model or model in _ALIAS:
+        return _ALIAS.get(model, model)
+    inst = _installed()
+    if not inst or model in inst:
+        return model
+    fam = model.split(":")[0]
+    pick = next((m for m in inst if m.split(":")[0] == fam), None)
+    if pick is None:
+        # 계열이 아예 다르면 등급표에 적힌 모델 중 깔려 있는 걸 쓴다 —
+        # 목록 순서대로 아무거나 잡으면 잡담 한 마디에 코더 모델이 뜨기도 한다.
+        pick = next((c["model"] for c in TIERS.values() if c["model"] in inst), None)
+    if pick is None:
+        # 임베딩 전용 모델은 대화가 안 된다. 그것만 빼고 아무거나.
+        pick = next((m for m in inst if "embed" not in m.lower()), None)
+    if pick is None:
+        return model                 # 진짜 아무것도 없으면 원래 이름으로 죽게 둔다
+    print(f"\n  ⚠️ [모델 없음] {model} 이 안 깔려 있다 → {pick} 로 대체한다(임시). "
+          f"등급 설계가 어긋나므로 comet.py 의 TIERS 를 실제 설치 모델로 고쳐라.")
+    _ALIAS[model] = pick
+    return pick
+
+
 def _gen(model, messages, *, stream=False, keep_alive=None, fmt=None,
          temperature=None, num_predict=MAX_REPLY_TOKENS, allow_cloud=False):
     """ollama.chat 단일 통로 — 출력 상한 + 타임아웃을 항상 건다.
@@ -69,7 +119,7 @@ def _gen(model, messages, *, stream=False, keep_alive=None, fmt=None,
         opts["temperature"] = temperature
     if num_predict:
         opts["num_predict"] = num_predict
-    kw = {"model": model, "messages": messages, "stream": stream}
+    kw = {"model": _resolve(model), "messages": messages, "stream": stream}
     if keep_alive is not None:
         kw["keep_alive"] = keep_alive
     if fmt is not None:
@@ -79,8 +129,8 @@ def _gen(model, messages, *, stream=False, keep_alive=None, fmt=None,
     return _client.chat(**kw)
 
 
-# ── 게임/바쁨 모드: GPU가 게임 등으로 바쁘면 무거운 모델 대신 light(4b)로 ─────
-#  16GB VRAM 한 장 → 게임이 GPU 점유 중이면 27b/14b 올리다 게임이 끊긴다.
+# ── 게임/바쁨 모드: GPU가 게임 등으로 바쁘면 무거운 모델 대신 light 로 ────────
+#  16GB VRAM 한 장 → 게임이 GPU 점유 중이면 26b/31b 올리다 게임이 끊긴다.
 #  auto = 매 턴 nvidia-smi 한 번으로 판단. on/off = 수동 고정(게임모드 켜/꺼/자동).
 BUSY_GPU_UTIL      = 55      # % 이상이면 '바쁨'(게임 등이 GPU 점유 중)
 BUSY_VRAM_FREE_MIB = 4500    # 여유 VRAM 이 이보다 적으면 '바쁨'(무거운 모델 못 올림)
