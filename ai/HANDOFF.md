@@ -61,7 +61,7 @@ A.B.B.Y.S 프로젝트의 두뇌 레이어 (VOID의 형제).
 ## ✅ 2026-06-30 — ⑥ profile 자동 동기화 (코멧이 호윤을 최신으로)
 - **왜**: profile/는 호윤 메모리의 정적 스냅샷 → 내(클로드) 메모리 갱신돼도 안 따라옴(알려진 한계). 이번에 소스 40 vs profile 34로 6개+ 뒤처져 있었음.
 - **`profile_sync.py` 신설**: 소스(`C:\Users\USER\.claude\projects\C--Users-USER\memory`)의 .md → `profile/` 복사·갱신. 명령 `프로필 동기화`(콘솔·폰, 안전=복사/갱신만, stale 삭제 안 함·보고만) / `프로필 동기화 정리`(미러=stale도 삭제). 변경분(추가/갱신/그대로/stale) 요약 반환.
-- **실행함**: 추가 6(feedback_no_destructive_system_commands·project_comet_coder·프로젝트 계약/멘토링 등) + 갱신 6(MEMORY 색인·project_comet 등) → profile 최신화. ⚠️**데몬 재시작해야 새 profile이 SYSTEM에 다시 로드됨**(_PROFILE은 임포트 시 1회 로드).
+- **실행함**: 추가 6(feedback_no_destructive_system_commands·project_comet_coder·외부 프로젝트 등) + 갱신 6(MEMORY 색인·project_comet 등) → profile 최신화. ⚠️**데몬 재시작해야 새 profile이 SYSTEM에 다시 로드됨**(_PROFILE은 임포트 시 1회 로드).
 - 검증: py_compile OK + 실제 동기화 정상(추가6·갱신6·그대로28·stale 0). 안전 기본(미러 아님)이라 호윤 큐레이션 안 날림.
 - **★자동화(완성)**: `daemon.py`가 **기동 시 comet import 전에 profile_sync.sync() 자동 호출** → 데몬 (재)시작마다 호윤 최신 메모리가 SYSTEM에 로드됨. watchdog가 데몬을 항상 살리니 = **재시작할 때마다 코멧이 호윤 최신으로 깨어남**(멱등=변경 없으면 no-op). ⑥ '자동' 부분 충족.
 

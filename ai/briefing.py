@@ -18,12 +18,6 @@ BRIEF_CHARS = 3500   # 브리핑에 넘길 문서 앞부분 글자 수(핸드오
 # ── 진행 중인 일 레지스트리 ──────────────────────────────────────
 #   doc = 상태 문서들(앞에서부터 우선). aliases = 호윤이 부를 법한 말.
 PROJECTS = {
-    "프로젝트": {
-        "name": "프로젝트",
-        "one_line": "크리에이터 가편집 AI (MVP=롱폼 가편집). 호윤의 최종 비전.",
-        "aliases": ["프로젝트", "프로젝트", "로컷", "롤컷", "가편집", "비공개", "비공개", "비공개"],
-        "docs": [os.path.join(DESK, "창업", "비공개", "프로젝트", "프로젝트", "CLAUDE.md")],
-    },
     "coinbot": {
         "name": "코인봇",
         "one_line": "코인 선물 자동매매 봇(100x 격리). 거래기록 누적 중.",
@@ -113,7 +107,7 @@ def brief(project: str = "") -> dict:
     if not key:
         names = " / ".join(c["name"] for c in PROJECTS.values())
         return {"ok": False,
-                "msg": f"어느 걸 브리핑할까요. 진행 중: {names}. (예: '프로젝트 브리핑')"}
+                "msg": f"어느 걸 브리핑할까요. 진행 중: {names}. (예: '코인봇 브리핑')"}
     cfg = PROJECTS[key]
     doc = _first_existing_doc(cfg)
     if not doc:
