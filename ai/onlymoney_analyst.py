@@ -12,7 +12,7 @@ HOME          = os.path.expanduser("~")
 SNAPSHOT_PATH = os.path.join(HOME, "iCloudDrive", "Only Money", "snapshot.json")
 PROMPTS_PATH  = os.path.join(HOME, "iCloudDrive", "Only Money", "prompts.json")
 
-MODEL   = "gemma3:27b"   # analyst.py와 동일 — 신중한 추론 모델
+MODEL   = "gemma4:31b"   # analyst.py와 동일 — 신중한 추론 모델
 TIMEOUT = 300            # 레이어당 최대 대기(초)
 UA      = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) COMET/1.0"
 

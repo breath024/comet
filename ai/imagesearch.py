@@ -6,7 +6,7 @@
 #  3단 폴백 — 위에서 막히면 아래로 떨어진다. 항상 '정직하게' 답한다:
 #   A단 (키 있으면): SerpAPI/serper Google Lens → 진짜 원본 출처 URL을 JSON으로.
 #   B단 (무키 최선시도): Yandex/Lens 업로드 스크래핑. 막히면 조용히 통과.
-#   C단 (항상 됨): gemma3가 '무엇인지' 식별 → web.py 로 검색·출처추적.
+#   C단 (항상 됨): gemma4가 '무엇인지' 식별 → web.py 로 검색·출처추적.
 #
 #  설계 원칙: web.py/news.py 와 동일 — urllib 표준라이브러리만, 결과는 {ok, ...} dict.
 #  원본을 못 찾으면 지어내지 않고 "식별만 됨 / 원본 못 찾음"이라 말한다.
@@ -28,7 +28,7 @@ CONFIG_FILE = os.path.join(_DIR, "imagesearch_config.json")
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
-VISION_MODEL = "gemma3:4b"      # 식별용 멀티모달 (vision.py 와 동일 계열)
+VISION_MODEL = "gemma4:12b"      # 식별용 멀티모달 (vision.py 와 동일 계열)
 MAX_WIDTH = 1024               # 업로드/식별용 축소 — 속도·전송량 절약
 
 
@@ -239,7 +239,7 @@ def reverse_nokey(jpeg):
 
 
 # ═══════════════════════════════════════════════════════════════
-#  C단) 식별 → 검색 (항상 됨, 키 0). gemma3 가 '무엇인지' 보고 web.py 가 찾는다.
+#  C단) 식별 → 검색 (항상 됨, 키 0). gemma4 가 '무엇인지' 보고 web.py 가 찾는다.
 # ═══════════════════════════════════════════════════════════════
 IDENTIFY_PROMPT = (
     "이 이미지를 보고 '무엇인지 식별'에 필요한 단서만 JSON으로 출력해라. 설명 문장 금지, JSON만.\n"
@@ -256,7 +256,7 @@ IDENTIFY_PROMPT = (
 
 
 def identify(path, model=None):
-    """gemma3 멀티모달로 이미지 식별 → dict(subject/kind/text/features/queries)."""
+    """gemma4 멀티모달로 이미지 식별 → dict(subject/kind/text/features/queries)."""
     import ollama
     cli = ollama.Client(timeout=180)
     try:

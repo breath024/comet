@@ -4,8 +4,8 @@
 #  A.B.B.Y.S 프로젝트의 상주 관리자 AI (v0 · 텍스트 콘솔)
 #
 #  구조:
-#   - 문지기 라우터: gemma3:4b 가 매 입력의 난이도를 판정
-#   - 3단 모델:  light=gemma3:4b / medium=qwen3:14b / heavy=gemma3:27b
+#   - 문지기 라우터: gemma4:12b 가 매 입력의 난이도를 판정
+#   - 3단 모델:  light=gemma4:12b / medium=gemma4:26b / heavy=gemma4:31b
 #   - 호흡(대기): 등급별 keep_alive 로 무거운 모델은 곧 VRAM 에서 증발
 #  의존성: ollama (파이썬) 하나. 음성/STT 는 다음 층에서 붙임.
 # ═══════════════════════════════════════════════════════════════
@@ -27,13 +27,13 @@ except Exception:
 # ═══════════════════════════════════════════════════════════════
 #  설정값
 # ═══════════════════════════════════════════════════════════════
-GATEKEEPER = "gemma3:4b"          # 문지기 = 항상 가벼운 모델
+GATEKEEPER = "gemma4:12b"         # 문지기 = 항상 가벼운 모델
 
 # 등급별 모델 + keep_alive(이만큼 안 쓰면 VRAM 에서 자동 언로드)
 TIERS = {
-    "light":  {"model": "gemma3:4b",   "keep_alive": "10m", "desc": "잡담·즉답"},
-    "medium": {"model": "qwen3:14b",   "keep_alive": "5m",  "desc": "기본 작업"},
-    "heavy":  {"model": "gemma3:27b",  "keep_alive": "30s", "desc": "신중한 큰 작업"},
+    "light":  {"model": "gemma4:12b",  "keep_alive": "10m", "desc": "잡담·즉답"},
+    "medium": {"model": "gemma4:26b",  "keep_alive": "5m",  "desc": "기본 작업"},
+    "heavy":  {"model": "gemma4:31b",  "keep_alive": "30s", "desc": "신중한 큰 작업"},
 }
 
 HISTORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "comet_history.json")
@@ -198,7 +198,7 @@ HELP_TEXT = """COMET 기능 목록
   회의 <주제> — 역할별 에이전트 토론→합성 (몇 분 걸림)
 
 [화면·이미지]
-  화면 봐줘 / 이 이미지 뭐야 — gemma3 vision (vision.py)
+  화면 봐줘 / 이 이미지 뭐야 — gemma4 vision (vision.py)
 
 [두뇌 전환]
   두뇌 — 현재 상태
@@ -292,7 +292,7 @@ FAMILIES = (
 # 도구 게이트 = 모든 계열 키워드의 합집합 (기존 TOOL_KW 와 동일 집합)
 TOOL_KW = tuple(k for _, kw, _ in FAMILIES for k in kw)
 
-# 화면 인식 신호 — 감지되면 gemma3 멀티모달로 PC 화면을 봄
+# 화면 인식 신호 — 감지되면 gemma4 멀티모달로 PC 화면을 봄
 SCREEN_KW = ("화면", "스크린", "모니터", "캡처", "보이는화면", "내화면")
 
 # 이미지 역검색 신호 — "이 사진 뭐야/어디서 왔어"를 자비스처럼(식별→원본/출처추적)
@@ -481,7 +481,7 @@ class Router:
         elif use_tools:
             tier, reason = "medium", "기억 도구 필요"
         else:
-            # 4) 문지기(gemma3:4b) 판단 — 난이도 + 자동 웹검색 필요여부
+            # 4) 문지기(gemma4:12b) 판단 — 난이도 + 자동 웹검색 필요여부
             try:
                 r = _gen(
                     GATEKEEPER,
@@ -501,12 +501,14 @@ class Router:
             except Exception as e:
                 tier, reason = "medium", f"분류 실패→기본 ({e})"
 
-        # 자동 웹검색은 명시 웹검색 경로와 동일하게 medium(qwen3:14b)으로 고정
-        # — 웹추론은 14b로 충분 검증됨 + 27b(heavy)는 단순 사실조회에 과하게 느림
+        # 자동 웹검색은 명시 웹검색 경로와 동일하게 medium(gemma4:26b)으로 고정
+        # — 단순 사실조회에 heavy 는 과하게 느리다. (검증은 옛 medium=qwen3:14b 때 한 것)
         if auto_web:
             tier = "medium"
 
-        # gemma3(light)는 tool 미지원 → 기억 작업이면 medium으로 승격
+        # 기억 작업이면 medium으로 승격.
+        # — 옛 light(gemma3:4b)는 tool 자체가 없어서 강제였다. gemma4:12b 는 tools 를 지원하지만
+        #   기억 쓰기는 틀리면 되돌리기 어려워서 승급은 그대로 둔다(속도보다 정확).
         if use_tools and tier == "light":
             tier, reason = "medium", reason + " +기억도구"
 
@@ -759,7 +761,7 @@ class Comet:
                 print("  · 이미지 역검색 (식별→원본·출처추적)")
                 full = self._image_search(text)
             elif screen:
-                print("  · 화면 인식 (gemma3 vision)")
+                print("  · 화면 인식 (gemma4 vision)")
                 full = self._look(text)
             else:
                 tier, reason, use_tools, auto_web = self.router.route(text)
@@ -795,7 +797,7 @@ class Comet:
 
         return full
 
-    # ── 화면 인식: 캡처 → gemma3 멀티모달 ───────────────────────
+    # ── 화면 인식: 캡처 → gemma4 멀티모달 ───────────────────────
     def _look(self, text):
         import vision
         answer = vision.look(text, PERSONA)
@@ -1081,9 +1083,10 @@ class Comet:
                         and result.get("count", 0) == 0)
 
         # action=="none"/empty_recall 은 결과 grounding 없이 SYSTEM(호윤 프로필 전체 포함)만 깔고
-        # 즉흥 답변시키는 유일한 경로다 — 4b(light)는 "이건 꺼내지 마라" 부정지시를 못 지켜서
+        # 즉흥 답변시키는 유일한 경로다 — 옛 light(gemma3:4b)가 "이건 꺼내지 마라" 부정지시를 못 지켜
         # 실사용 중 민감 개인사(트라우마·이별 등)를 그대로 요약해 흘린 사례가 있었다(대화기록 확인).
-        # 이 경로만 최소 medium(qwen3:14b)으로 올린다 — 속도보다 안전이 우선.
+        # 지금 light 는 gemma4:12b 라 나아졌을 수 있으나 재실측 전까지 이 방어는 유지한다.
+        # 이 경로만 최소 medium(gemma4:26b)으로 올린다 — 속도보다 안전이 우선.
         if (action == "none" or empty_recall) and cfg["model"] == TIERS["light"]["model"]:
             cfg = dict(TIERS["medium"])
 
@@ -1242,7 +1245,7 @@ BANNER = """══════════════════════�
   COMET  ·  Cognitive Operation Management
             & Electronic Transmission
 ═══════════════════════════════════════════════════
-  3단 모델:  light=gemma3:4b  medium=qwen3:14b  heavy=gemma3:27b
+  3단 모델:  light=gemma4:12b  medium=gemma4:26b  heavy=gemma4:31b
   명령어:  음성(v) | 말하기 | 소리작게/소리크게 | 상태 | 잠자 | 요약 | 리셋 | 종료
 ═══════════════════════════════════════════════════"""
 

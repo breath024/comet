@@ -148,10 +148,39 @@ A.B.B.Y.S 프로젝트의 두뇌 레이어 (VOID의 형제).
 ---
 
 ## 모델 (3단 라우터)
-- **light = gemma3:4b** — 문지기(난이도 판정)·잡담·화면인식(vision)
-- **medium = qwen3:14b** — 기본 작업·도구·기억질문·종목분석. (2026-06-17 qwen2.5:14b→qwen3:14b 교체, 추론력↑. 비판적 톤 유지)
-- **heavy = gemma3:27b** — 신중한 큰 작업. (2026-06-17 qwen2.5:32b→gemma3:27b. 구형 qwen2.5·exaone3.5는 삭제됨)
-- 문지기 gemma3:4b가 매 입력을 light/medium/heavy로 판정. "무겁게/가볍게"로 수동 오버라이드.
+- **light = gemma4:12b** — 문지기(난이도 판정)·잡담·화면인식(vision)
+- **medium = gemma4:26b** — 기본 작업·도구·기억질문. (26b-a4b = MoE, 활성 4B라 크기 대비 빠름)
+- **heavy = gemma4:31b** — 신중한 큰 작업·종목분석·표 읽기. (dense 31B, 16GB 카드엔 일부 CPU 오프로드 = 느림. 등급 설계상 감수)
+- 문지기 gemma4:12b가 매 입력을 light/medium/heavy로 판정. "무겁게/가볍게"로 수동 오버라이드.
+- 호흡: 등급별 keep_alive로 무거운 모델은 곧 VRAM에서 자동 언로드.
+
+**2026-08-31 모델 세대교체 (gemma3/qwen3 → gemma4).**
+호윤이 옛 모델(gemma3:4b·qwen3:14b·gemma3:27b)을 예전에 지웠는데 코드에는 그대로 남아 있어서
+COMET이 문지기 호출부터 죽었다(`comet.py`의 `_gen()`은 `llm.py`와 달리 **설치 안 된 모델을 폴백하지 않는다**).
+설치된 모델로 맞추는 대신 세대를 올렸다. 매핑은 1:1:
+`gemma3:4b→gemma4:12b` / `qwen3:14b→gemma4:26b` / `gemma3:27b→gemma4:31b` (py 9개 파일 29곳).
+
+- **부수 효과: 이제 3단이 전부 tools·vision·thinking을 지원한다.** 옛 light(gemma3:4b)는 tool 자체가 없어
+  기억 작업이면 강제로 medium 승급이었다. gemma4:12b는 tools가 되지만 **승급은 그대로 뒀다** —
+  기억 쓰기는 틀리면 되돌리기 어려워서 속도보다 정확을 택함.
+- **옛 실측은 옛 모델의 것이다.** "웹추론 14b로 충분", "analyst는 27b 고정이 최고(A/B/C 실측)",
+  "4b가 부정지시를 못 지켜 민감 개인사를 흘림" — 전부 gemma3/qwen3 때 잰 값이라 그대로 승계하지 않는다.
+  관련 방어(민감경로 medium 승급)는 **재실측 전까지 유지**한다. 주석에도 그렇게 적어뒀다.
+- **실측 (2026-08-31, RTX 5070 Ti 16GB · 한 문장 생성):**
+
+  | 등급 | 모델 | 콜드(로드 포함) | 웜 |
+  |---|---|---|---|
+  | light | gemma4:12b | 11.8s | **7.7s** |
+  | medium | gemma4:26b | 25.8s | **7.9s** |
+  | heavy | gemma4:31b | 130.8s | **117.2s** |
+
+  medium 이 light 와 같은 속도인 건 26b가 **MoE(활성 4B)** 라서다. 크기(17.3GB)만 크지 실제 계산은 가볍다.
+  **heavy(31b)는 dense 31B라 18.5GB → 16GB 밖으로 넘쳐 매 토큰이 CPU를 탄다. 한 문장에 2분.**
+  ⚠️ `analyst.py`·`market_brief.py`·`onlymoney_analyst.py`·`vision.read_holdings` 가 heavy 를 쓴다.
+  종목분석은 옛날 1.5분이었는데 이대로면 훨씬 길어진다. **heavy 를 26b로 내릴지는 호윤 판단 대기.**
+- 문지기 판정 검증 OK: "안녕"→light(인사) / "엔비디아 지금 사도 될까"→medium / "퀵소트 짜줘"→medium.
+  JSON 판정이 gemma4:12b 에서도 깨지지 않는다(이게 죽어서 COMET 전체가 안 돌았다).
+- **아직 안 본 것: 실사용 대화 한 판.** `<think>` 필터·한국어 톤·도구 호출은 연기시험만 했지 안 돌려봤다.
 - 호흡: 등급별 keep_alive로 무거운 모델은 곧 VRAM에서 자동 언로드.
 
 ## 파일 구성
@@ -160,7 +189,7 @@ A.B.B.Y.S 프로젝트의 두뇌 레이어 (VOID의 형제).
 - `memory_db.py` — 장기기억 SQLite(`comet_memory.db`). 도구: remember/recall/list_todos/complete_todo.
 - `files.py` — 파일/폴더 읽기(읽기전용): list_dir/read_file/search_files. 한국어 경로 별칭 해석.
 - `projects.py` — 코인봇/주식봇 거래 CSV 통계(승률·손익). trade_stats/list_sources.
-- `vision.py` — PC 화면 캡처(Pillow) → gemma3 멀티모달.
+- `vision.py` — PC 화면 캡처(Pillow) → gemma4 멀티모달.
 - `web.py` — **웹 검색(DuckDuckGo lite, 키 0) + 페이지 본문 추출.** search/fetch/research, **kl(지역·언어코드) 인자로 나라별 현지 결과 수집 가능**(kr-ko/us-en/cn-zh/jp-jp…), source에 lang(국가) 태그. 도구: web_search.
 - `prices.py` — **라이브 시세(무키 JSON API 직접 호출, LLM 안 거침=날조 불가).** 환율(Yahoo)·코인(CoinGecko+업비트)·해외주가(Yahoo)·공포탐욕(alternative.me). 도구: get_fx/get_crypto/get_stock/get_fear_greed.
 - `financials.py` — **재무·실적(Yahoo quoteSummary, 무키).** crumb+쿠키 우회로 매출성장·마진·선행PER/PEG/PBR·ROE·애널리스트 목표가·어닝 서프라이즈·매출 추세(ASCII 스파크라인) 추출. 숫자는 API 그대로(LLM 안 거침=날조 불가). 도구 get_financials. analyst가 자동 수집해 evidence·프롬프트에 주입(블로그 PER보다 우선). ⚠️미국/해외 티커 위주, 한국 공시(DART)는 키 필요→별도.
@@ -211,7 +240,7 @@ A.B.B.Y.S 프로젝트의 두뇌 레이어 (VOID의 형제).
 - **코인봇 승률:** profile의 `project_coin_bot.md`엔 "승률 80%"(호윤 옛 주장), 실제 데이터 계산은 **46%**. 도구(trade_stats)가 답할 땐 46%(정확). 일반 대화에서 80% 나오면 profile 때문 — 도구 경유가 맞음.
 - **도구 단일 동작:** 한 턴에 동작 하나 → "백테스트가 실거래보다 나아?" 같은 비교는 일반론으로 빠짐(따로 물으면 정확).
 - **profile 정적 스냅샷:** 내 메모리 갱신돼도 자동 동기화 안 됨 → `profile/`에 .md 재복사 필요.
-- **화면인식:** gemma3:4b라 디테일 한계. 정밀히 = `vision.py`의 `VISION_MODEL`을 gemma3:27b로(느림).
+- **화면인식:** light(gemma4:12b)라 디테일 한계. 정밀히 = `vision.py`의 `VISION_MODEL`을 gemma4:31b로(느림).
 - **CLI/컴퓨터 제어:** 호윤이 "에바"라며 보류. 안 만듦.
 - torch가 CPU 빌드(CUDA False) — Whisper STT는 CPU. 로컬 XTTS 목소리복제 하려면 Blackwell CUDA 먼저 고쳐야.
 

@@ -14,11 +14,11 @@
 | `comet_memory.db` | 기억 DB (SQLite, `memory` 테이블) |
 | `profile/` | 호윤 메모리 미러 (Claude Code memory → 여기 동기화) |
 | `web.py` | 웹 검색 (DuckDuckGo 원천 추적) |
-| `analyst.py` | 종목 분석 2패스 (컨센서스→역발상, gemma3:27b 고정) |
+| `analyst.py` | 종목 분석 2패스 (컨센서스→역발상, gemma4:31b 고정) |
 | `marketlog.py` | 정세 로그 (날짜별 흐름, market_log.db) |
 | `financials.py` | 재무 실적 (Yahoo 무키 crumb) |
 | `prices.py` | 라이브 시세 (환율/코인/주가/공포탐욕) |
-| `vision.py` | 화면/이미지 인식 (gemma3 멀티모달) |
+| `vision.py` | 화면/이미지 인식 (gemma4 멀티모달) |
 | `briefing.py` | 프로젝트 브리핑 (개발 상태 요약) |
 | `onlymoney_analyst.py` | Only Money 9단 파이프라인 분석 (포트·시세·심리) |
 | `autonomy.py` | 자율/상주 모드 (먼저 말 걸기·부르면 듣기) |
@@ -28,10 +28,10 @@
 | `council.py` | "회의 주제" 명령 → 다중 에이전트 토론 |
 
 ## 3단 모델 구조
-- `light` = gemma3:4b (잡담·즉답)
-- `medium` = qwen3:14b (기본 작업, 도구 처리)
-- `heavy` = gemma3:27b (복잡 코드·신중한 추론)
-- 게이트키퍼(분류기): gemma3:4b
+- `light` = gemma4:12b (잡담·즉답)
+- `medium` = gemma4:26b (기본 작업, 도구 처리)
+- `heavy` = gemma4:31b (복잡 코드·신중한 추론)
+- 게이트키퍼(분류기): gemma4:12b
 - 클라우드 전환: `cloud.py` — `allow_cloud=True` 호출에서만 클라우드로 라우팅
 
 ## 도구 게이트 키워드 (FAMILIES)
@@ -48,7 +48,7 @@
 ## 대화 흐름
 1. `respond(text)` 진입
 2. 특수 명령어 먼저 체크 (코딩/회의/게임모드/두뇌전환 등)
-3. `Router.route()` → 문지기(gemma3:4b)가 tier 판정
+3. `Router.route()` → 문지기(gemma4:12b)가 tier 판정
 4. 키워드 있으면 `_chat_with_tools()`, 없으면 `_chat_stream()`
 5. 대화 기록 저장 (`comet_history.json`)
 

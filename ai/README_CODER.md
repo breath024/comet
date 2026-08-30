@@ -102,7 +102,7 @@ python coder.py "C:\작업할\폴더"
 
 ## 모델
 - 기본 = `qwen3-coder:30b` (MoE, 코딩 1위급, 16GB에 살짝 흘러도 빠름).
-- 폴백 = devstral → qwen2.5-coder:14b → qwen3:14b → gemma3 (llm.py `local_fallbacks`).
+- 폴백 = devstral → gemma4:26b → gemma4:31b → gemma4:12b (llm.py `local_fallbacks`).
 - 바꾸려면 `coder_config.json`:  `{"local_model": "devstral"}`
 - **API 승급**(돈 여유 시): `setx COMET_API_KEY "키"` → DeepSeek 등으로 자동. 코딩 훨씬 좋아짐.
 - 모델 비교: qwen3-coder:30b 가 우리 JSON 프로토콜과 궁합 최고(devstral 은 네이티브 tool-calling 튜닝이라 이 루프에선 약함).

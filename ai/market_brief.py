@@ -23,7 +23,7 @@ import prices
 import web
 import news
 
-BRIEF_MODEL = "gemma3:27b"            # 종합·해석은 신중하게(정확>속도)
+BRIEF_MODEL = "gemma4:31b"            # 종합·해석은 신중하게(정확>속도)
 _AC = ollama.Client(timeout=600)      # 2패스 27b — 얼어붙음 대비 긴 타임아웃
 
 INDICES = [("^DJI", "다우"), ("^IXIC", "나스닥"),

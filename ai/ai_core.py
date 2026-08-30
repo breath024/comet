@@ -21,7 +21,7 @@ from shared import AIOutput, VoiceAnalyzer, SpeechToText, HistoryManager
 # ═══════════════════════════════════════════════════════
 CONFIG = {
     # ── AI 모델 ─────────────────────────────────────────
-    "model":            "qwen3:14b",
+    "model":            "gemma4:26b",
     "whisper_model":    "medium",
 
     # ── 마이크 / 녹음 ────────────────────────────────────

@@ -22,7 +22,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(HERE, "coder_config.json")
 
 # ── 기본 설정 ────────────────────────────────────────────────────
-#  local_model: 코딩용 로컬 모델. qwen2.5-coder:14b 권장(없으면 자동 폴백).
+#  local_model: 코딩용 로컬 모델. qwen3-coder:30b 권장(없으면 자동 폴백).
 #  api_*      : 키가 있을 때만 사용. base_url 은 OpenAI 호환 /chat/completions.
 DEFAULTS = {
     "backend":      "auto",                 # auto | local | api
@@ -30,8 +30,8 @@ DEFAULTS = {
     #  qwen3-coder:30b = MoE(30B/3.3B활성) 코딩 1위급·툴콜 강함(살짝 흘러도 빠름)
     #  devstral        = Mistral 에이전트 전용 24B·툴콜 형식 가장 안정(완전 적재)
     "local_model":  "qwen3-coder:30b",
-    "local_fallbacks": ["devstral", "qwen2.5-coder:14b", "qwen3:14b",
-                        "gemma3:27b", "gemma3:4b"],
+    "local_fallbacks": ["devstral", "gemma4:26b",
+                        "gemma4:31b", "gemma4:12b"],
     "keep_alive":   "10m",
     # 한 번 호출의 출력 토큰 상한(로컬=num_predict, API=max_tokens). 폭주 차단.
     #  · 로컬: 한 스텝이 만 토큰씩 토하며 29분 걸리는 사고 방지(시간).
@@ -92,7 +92,7 @@ def _resolve_local(cfg):
     installed = _installed_models()
     want = cfg["local_model"]
     if any(want.split(":")[0] in m for m in installed):
-        # 정확히 있거나(qwen2.5-coder:14b) 같은 계열이 있으면 want 사용
+        # 정확히 있거나(qwen3-coder:30b) 같은 계열이 있으면 want 사용
         if want in installed:
             return want
         for m in installed:

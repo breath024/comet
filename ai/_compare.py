@@ -5,7 +5,7 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 import analyst
 
 Q = " ".join(sys.argv[1:]) or "엔비디아 지금 사도 될까"
-M14, M27 = "qwen3:14b", "gemma3:27b"
+M14, M27 = "gemma4:26b", "gemma4:31b"
 CONFIGS = [
     ("A. 14b / 14b (현재 기본)", M14, M14),
     ("B. 27b / 27b (전부 고성능)", M27, M27),

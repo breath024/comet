@@ -28,8 +28,8 @@ import trace as _trace
 
 # 분석 전용 모델 — 정확·날카로움이 1순위(속도 무관)라 양 패스 모두 최고 성능 모델 고정.
 # (2026-06-19 A/B/C 실측: 27b/27b가 1차 추론 깊이·2차 할루시네이션 감사 모두 최고. 하이브리드는 14b 감사관이 약한 고리가 됨.)
-ANALYST_MODEL = "gemma3:27b"
-PLANNER_MODEL = "qwen3:14b"   # 나라·언어 선정은 가벼운 작업 → 빠른 모델
+ANALYST_MODEL = "gemma4:31b"
+PLANNER_MODEL = "gemma4:26b"   # 나라·언어 선정은 가벼운 작업 → 빠른 모델
 
 # 언어 → DuckDuckGo 지역·언어 코드(현지 결과를 받기 위함) / 표시용 국가명
 LANG2KL = {"ko": "kr-ko", "en": "us-en", "zh": "cn-zh", "tw": "tw-tzh",

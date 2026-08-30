@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # ═══════════════════════════════════════════════════════════════
-#  COMET 화면 인식 — PC 화면 캡처 → gemma3 멀티모달로 본다.
+#  COMET 화면 인식 — PC 화면 캡처 → gemma4 멀티모달로 본다.
 #  데몬이 사는 PC의 화면을 캡처(폰에서 물어도 PC 화면을 봐줌).
 # ═══════════════════════════════════════════════════════════════
 import os
@@ -8,8 +8,8 @@ import tempfile
 import ollama
 from PIL import ImageGrab
 
-VISION_MODEL = "gemma3:4b"     # 멀티모달. 더 정밀히 보려면 gemma3:27b(느림)
-HOLDINGS_MODEL = "gemma3:27b"  # 표·숫자 읽기는 정밀해야 하니 27b
+VISION_MODEL = "gemma4:12b"     # 멀티모달. 더 정밀히 보려면 gemma4:31b(느림)
+HOLDINGS_MODEL = "gemma4:31b"  # 표·숫자 읽기는 정밀해야 하니 31b
 MAX_WIDTH = 1280               # 캡처 축소 — 속도/토큰 절약
 
 # ── 안정성: 얼어붙은 ollama 대비 타임아웃 + 출력 상한(설명/표 폭주 차단). 27b 홀딩스라 300s.
