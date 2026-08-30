@@ -39,6 +39,7 @@ logs/
 # --- 실제 토큰/설정 (예시파일만 올림) ---
 ai/telegram_config.json
 ai/daemon_token.txt
+ai/local_config.json
 
 # --- 개인 기억·프로필·대화기록 ---
 ai/profile/

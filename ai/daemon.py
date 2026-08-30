@@ -29,6 +29,7 @@ except Exception as _e:
     print(f"[profile] 동기화 건너뜀: {_e}")
 
 import comet
+import localcfg
 
 HOST = "127.0.0.1"     # localhost 전용 — 외부 노출 0. 원격 접속은 'tailscale serve'(HTTPS)로.
 PORT = 8765
@@ -55,8 +56,10 @@ def _load_or_create_token():
 TOKEN = _load_or_create_token()
 
 # 원격(serve 경유) 허용 계정 — Tailscale이 위조 불가하게 박아주는 본인 로그인
-# 환경변수 COMET_ALLOWED_LOGINS 에 쉼표로 구분해 넣는다 (예: me@example.com)
-ALLOWED_LOGINS = {e.strip() for e in os.environ.get("COMET_ALLOWED_LOGINS", "").split(",") if e.strip()}
+#  local_config.json 의 allowed_logins 를 먼저 보고, 없으면 환경변수 COMET_ALLOWED_LOGINS(쉼표 구분).
+#  둘 다 비어 있으면 원격 접속은 전부 거부된다(로컬 접속은 영향 없음).
+ALLOWED_LOGINS = set(localcfg.get("allowed_logins") or
+                     [e.strip() for e in os.environ.get("COMET_ALLOWED_LOGINS", "").split(",") if e.strip()])
 
 
 WEB_UI = """<!doctype html>

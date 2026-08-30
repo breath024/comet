@@ -44,8 +44,23 @@ ai/run_daemon.bat   # 상주 서버
 `ai/telegram_config.example.json`을 `telegram_config.json`으로 복사하고
 봇 토큰을 채우면 텔레그램으로 브리핑을 받을 수 있다.
 
+## 로컬 설정 (`ai/local_config.json`)
+
+개인 경로와 계정은 코드에 박지 않고 이 파일에서 읽는다.
+`ai/local_config.example.json`을 `local_config.json`으로 복사해서 채운다.
+파일이 없어도 실행은 되지만, 아래 두 가지가 비어 있는 상태로 돈다.
+
+| 항목 | 없을 때 |
+|---|---|
+| `allowed_logins` | 원격(tailscale serve) 접속이 전부 거부된다. 로컬 접속은 영향 없음. |
+| `extra_projects` | 그 프로젝트는 브리핑 목록에 뜨지 않는다. |
+
+`allowed_logins`는 환경변수 `COMET_ALLOWED_LOGINS`(쉼표 구분)로도 넣을 수 있고,
+`local_config.json`이 있으면 그쪽이 우선한다.
+
 ## 저장소에 없는 것
 
 개인 기억과 대화 기록은 올리지 않았다.
 `ai/profile/`, `comet_history.json`, `*.db`, `telegram_config.json`,
-`daemon_token.txt`, 그리고 TTS 모델 가중치(`.onnx`)가 제외돼 있다.
+`daemon_token.txt`, `local_config.json`,
+그리고 TTS 모델 가중치(`.onnx`)가 제외돼 있다.

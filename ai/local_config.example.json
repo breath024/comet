@@ -1,0 +1,14 @@
+{
+  "_설명": "이 파일을 local_config.json 으로 복사해서 쓴다. local_config.json 은 저장소에 올라가지 않는다.",
+
+  "allowed_logins": ["me@example.com"],
+
+  "extra_projects": {
+    "myproject": {
+      "name": "내 프로젝트",
+      "one_line": "한 줄 설명.",
+      "aliases": ["내프로젝트", "myproject"],
+      "docs": ["~/Desktop/myproject/HANDOFF.md", "~/Desktop/myproject/README.md"]
+    }
+  }
+}

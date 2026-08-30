@@ -9,6 +9,8 @@
 import os
 import time
 
+import localcfg
+
 HOME = os.path.expanduser("~")
 DESK = os.path.join(HOME, "Desktop")
 ICLOUD = os.path.join(HOME, "iCloudDrive")
@@ -52,6 +54,16 @@ PROJECTS = {
                  os.path.join(DESK, "중국어 공부", "README.md")],
     },
 }
+
+# 개인 경로가 들어가는 항목(업무 프로젝트 등)은 저장소에 올리지 않고 여기서 합친다.
+#  local_config.json 의 extra_projects — 파일이 없으면 아무 일도 없다.
+for _k, _c in (localcfg.get("extra_projects") or {}).items():
+    PROJECTS[_k] = {
+        "name": _c.get("name", _k),
+        "one_line": _c.get("one_line", ""),
+        "aliases": _c.get("aliases", []),
+        "docs": [os.path.expanduser(d) for d in _c.get("docs", [])],
+    }
 
 
 def _resolve(q: str) -> str:

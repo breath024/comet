@@ -9,6 +9,19 @@ A.B.B.Y.S 프로젝트의 두뇌 레이어 (VOID의 형제).
 
 ---
 
+## ✅ 2026-08-30 — 개인정보를 코드 밖으로 (`local_config.json`)
+
+- **왜:** 저장소를 공개하면서 개인 경로·계정을 코드에서 지웠더니 **로컬 동작까지 같이 죽었다.**
+  (briefing의 업무 프로젝트 항목이 사라지고, daemon의 원격 허용 계정이 빈 집합이 됨)
+- **무엇:** `localcfg.py` 신설 — `ai/local_config.json`(gitignore됨)을 읽는 얇은 로더. 파일 없으면 전부 기본값.
+  - `daemon.py` — `ALLOWED_LOGINS`가 `allowed_logins` → 없으면 환경변수 `COMET_ALLOWED_LOGINS` 순으로.
+  - `briefing.py` — `PROJECTS`에 `extra_projects`를 합침. 개인 경로가 들어가는 항목은 여기에만 둔다.
+  - `local_config.example.json` 동봉, README에 표로 설명.
+- **검증:** `briefing.PROJECTS`에 항목 복귀 + 문서 경로 실제 존재 확인, `_resolve()` 통과. 데몬은 아직 라이브 미확인.
+- **주의:** 앞으로 개인 경로·계정은 코드에 박지 말고 `local_config.json`으로.
+- **별건(미수정):** `briefing.py`의 다른 항목들이 `Desktop\창업\...`를 가리키는데 실제 폴더는 `Desktop\A.창업\...`다.
+  코인봇·주식봇 브리핑은 문서를 못 찾고 있을 것. 손대지 않았음.
+
 ## ✅ 2026-06-29 한 것 — 기능 디스패치 테이블 통합 리팩터 (★다음작업 완료)
 - **왜:** 라우팅이 **병렬 레지스트리 2개**(키워드 튜플 `MEMORY_KW…HOLD_KW` ↔ `DECIDE_PROMPT`의 액션 18개 목록)라 손으로 맞춰야 했고, `DECIDE_PROMPT`가 매 도구턴마다 18개 명세를 통째로 14b에 주입 → 길고 느림.
 - **무엇(comet.py):**
