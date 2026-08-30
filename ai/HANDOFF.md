@@ -9,19 +9,19 @@ A.B.B.Y.S 프로젝트의 두뇌 레이어 (VOID의 형제).
 
 ---
 
-## ✅ 2026-08-30 — 개인정보를 코드 밖으로 (`local_config.json`)
+## 📌 다음에 해야 할 것 (2026-08-30 기준)
 
-- **왜:** 저장소를 공개하면서 개인 경로·계정을 코드에서 지웠더니 **로컬 동작까지 같이 죽었다.**
-  (briefing의 업무 프로젝트 항목이 사라지고, daemon의 원격 허용 계정이 빈 집합이 됨)
-- **무엇:** `localcfg.py` 신설 — `ai/local_config.json`(gitignore됨)을 읽는 얇은 로더. 파일 없으면 전부 기본값.
-  - `daemon.py` — `ALLOWED_LOGINS`가 `allowed_logins` → 없으면 환경변수 `COMET_ALLOWED_LOGINS` 순으로.
-  - `briefing.py` — `PROJECTS`에 `extra_projects`를 합침. 개인 경로가 들어가는 항목은 여기에만 둔다.
-  - `local_config.example.json` 동봉, README에 표로 설명.
-- **검증:** `briefing.PROJECTS`에 항목 복귀 + 문서 경로 실제 존재 확인, `_resolve()` 통과. 데몬은 아직 라이브 미확인.
-- **주의:** 앞으로 개인 경로·계정은 코드에 박지 말고 `local_config.json`으로.
-- **별건(미수정):** `briefing.py`의 다른 항목들이 `Desktop\창업\...`를 가리키는데 실제 폴더는 `Desktop\A.창업\...`다.
-  코인봇·주식봇 브리핑은 문서를 못 찾고 있을 것. 손대지 않았음.
+1. **데몬을 한 번 띄워 원격 접속을 확인할 것.** 8/30 에 `daemon.py` 의 허용 계정과
+   `briefing.py` 의 프로젝트 목록을 `ai/local_config.json`(gitignore) 에서 읽도록 바꿨다.
+   구문·로딩은 검사했지만 **라이브로는 안 돌렸다.**
+   `local_config.json` 이 없으면 원격 접속이 전부 거부된다(로컬은 영향 없음).
+   설정법은 `README.md` 의 「로컬 설정」 절, 예시는 `local_config.example.json`.
 
+2. **`briefing.py` 의 경로가 낡았다.** 항목 대부분이 `Desktop\창업\...` 를 가리키는데
+   실제 폴더는 `Desktop\A.창업\...` 다. 코인봇·주식봇 브리핑이 문서를 못 찾고 있을 것.
+   8/30 에는 시킨 범위 밖이라 손대지 않았다.
+
+※ 8/30 작업 상세(무엇을 왜 바꿨는지, 못 살린 것)는 `logs/2026-08-30-log.md`.
 ## ✅ 2026-06-29 한 것 — 기능 디스패치 테이블 통합 리팩터 (★다음작업 완료)
 - **왜:** 라우팅이 **병렬 레지스트리 2개**(키워드 튜플 `MEMORY_KW…HOLD_KW` ↔ `DECIDE_PROMPT`의 액션 18개 목록)라 손으로 맞춰야 했고, `DECIDE_PROMPT`가 매 도구턴마다 18개 명세를 통째로 14b에 주입 → 길고 느림.
 - **무엇(comet.py):**
