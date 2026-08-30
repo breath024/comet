@@ -90,7 +90,7 @@ A.B.B.Y.S 프로젝트의 두뇌 레이어 (VOID의 형제).
 - **★ 미해결 (d) 해결: GPU-busy 게이트.** `comet._gpu_busy`를 `Autonomy(gpu_busy_fn=...)`로 주입 → brief가 27b를 띄우기 전 GPU 바쁨(게임 등) 체크, 바쁘면 미룸(하루 1회라 급할 것 없음). `comet.py` 생성부 한 줄 추가.
 - 명령: **`자율모드 brief 켜/꺼`** (콘솔·폰 공용, 기존 파서가 자동 인식). 상태에 brief 줄 노출. 켜면 autonomy_config.json 저장·재시작 복원.
 - 검증: `python autonomy.py`(토글 ON/OFF·상태 정상), `market_brief`/`notify` import OK, `py_compile autonomy/comet/market_brief` 통과. autonomy_config.json은 전부 off로 원복(테스트 잔재 제거).
-- **남은 활성화 한 수(호윤이):** 데몬 재시작(`run_daemon.bat`, 옛 데몬 종료 후) → 폰/콘솔에서 `자율모드 brief 켜`. 텔레그램은 이미 연결됨(chat_id 7295352748). hour는 미장 마감(한국 아침) 기준 조정 가능(autonomy_config.json `brief.hour`).
+- **남은 활성화 한 수(호윤이):** 데몬 재시작(`run_daemon.bat`, 옛 데몬 종료 후) → 폰/콘솔에서 `자율모드 brief 켜`. 텔레그램은 이미 연결됨(chat_id <chat_id>). hour는 미장 마감(한국 아침) 기준 조정 가능(autonomy_config.json `brief.hour`).
 - **brief 자동 켜기 ON** (호윤 승인 06-28): autonomy_config.json `brief.enabled=true` → 다음 데몬 재시작 때 `restore()`가 자동 가동. 끄려면 `자율모드 brief 꺼` 또는 config false. 본문추출 노이즈 청소·watchlist·wake는 그대로 남음.
 
 ---
@@ -103,7 +103,7 @@ A.B.B.Y.S 프로젝트의 두뇌 레이어 (VOID의 형제).
 1. 안정성: comet·vision·analyst 모든 모델 호출에 타임아웃+출력상한 → 데몬 안 얼어붙음(검증).
 2. 게임/바쁨 모드: GPU 바쁘면 대화 라우터를 4b로 강등(comet 한정).
 3. `autonomy.py` 신설: proactive/wake 모드 레이어(저장·복원·토글 검증). wake는 openwakeword 미설치라 게이트.
-4. **텔레그램 연결 완료**(봇 @AbbysProject_comet_bot, chat_id 7295352748 저장). 푸시 통로 살아남.
+4. **텔레그램 연결 완료**(봇 @<봇핸들>, chat_id 저장(값은 telegram_config.json)). 푸시 통로 살아남.
 5. `market_brief.py` 신설: 일일 미증시 브리핑. 숫자=prices(정확), 사건=뉴스RSS(날짜필터로 stale 차단)+**상위 4개 본문 긁기**(헤드라인→web검색 우회). 2패스(종합→사실감사).
 
 **현재 브리핑 품질(솔직):** 숫자 정확 + 오늘 사건 + 일부 본문 깊이("과거 17번 급락 회복" 같은 분석은 본문서 캐옴) + 모르면 "파악 어렵다"로 정직. **SPY 커뮤니티 큐레이터급은 아직 아님.**
@@ -155,7 +155,7 @@ A.B.B.Y.S 프로젝트의 두뇌 레이어 (VOID의 형제).
 - `marketlog.py` — **정세 로그(SQLite market_log.db) + 가짜뉴스 필터.** web/analyst가 긁은 출처를 날짜·토픽·등급·링크로 적재(중복방지=내용 해시 UNIQUE). **신뢰 필터 assess(): 중대사안(암살·전쟁·디폴트 등)인데 듣보/단독/특보+과장어로 '말로만 확신' 주는 약한출처(등급3)는 rejected(가짜 의심)로 안 들임, URL 없으면 거부, 일반 등급3은 unconfirmed(참고), 등급1/2는 confirmed.** 도구 market_log(토픽 흐름 타임라인+링크 조회). analyst가 분석 때마다 log_research()로 자동 적재. (날짜로 '정세 흐름' 추적 + 나중 검토용 링크 보존)
 - `finance_news.py` — **금융 뉴스 소스(Only Money 엔진과 동일 피드, 키0·의존성0).** 2026-06-28 신설. 종목별 Yahoo Finance RSS(`headline?s=티커`) + 거시(CNBC·MarketWatch·Investing) RSS를 받아 **analyst의 1차 근거**로 쓴다. **왜:** analyst가 web.py(덕덕고)로 "엔비디아 사도될까"를 검색하면 티스토리·블로그(등급3)만 긁혀 컨센서스가 부실(TQQQ는 출처 0개로 빈손)했음. Only Money 대시보드(index.html)가 쓰는 진짜 금융매체 RSS를 그대로 가져옴 → 이제 출처가 **전부 등급2 보도언론(fool/yahoo/247wallst)·날짜부착**. 반환 dict는 web.research source 와 동형이라 analyst._src_block/_sources_footer/_evidence 무수정 소비. 도메인당 3건까지 허용(단일 양질피드라 블로그식 1도메인=1건 안 함), FRESH_DAYS=30 신선필터. 검증: NVDA 6건(Vera Rubin 발표 등)·TQQQ 4건(구조적 감쇠비용)·블로그 0건, 속도 3분→1분53초. ⚠️Yahoo 종목피드는 가끔 섹터 일반기사(SpaceX·Vanguard 등)도 섞임(종목 100% 특정은 아님). **이미지 역검색(imagesearch.py)은 web.py를 '이게 뭔 사진인지' 식별 뒤 일반검색으로만 쓰므로 그대로 둠 — 금융 소스만 여기로 분리.**
 - `analyst.py` — **종목·테마 분석 브레인(2패스 이중판단).** **(2026-06-28 소스 교체: gather()의 1차 근거가 덕덕고 다국어 → `finance_news`(금융 RSS). 덕덕고 다국어는 금융RSS가 텅 빌 때만 폴백.)** 수집(티커감지→Yahoo 1년일봉 실계산 52주·수익률·이평선 + **다국어 수집**: _plan_languages가 종목 공급망·시장 엮인 나라 2~3곳 골라 현지어 쿼리 생성[엔비디아→미국en·중국zh·한국ko]→나라별 web.research→도메인 중복제거. 영중일 검색이 fool.com·investing.com 등 진짜 금융매체를 끌어와 출처품질↑[한국검색만 하면 죄다 블로그]) → ①컨센서스 분석가(시장 다수의견+2차파급효과 지도) → ②역발상 검증관(컨센서스 역심리 + **1차의 미근거 수치 적발=할루시네이션 차단** + ✅확인/🤔추론/❓미확인 분리 최종콜). 가격은 파이썬이 직접 박아 그라운딩 보장. web.py+prices.py 재활용, 의존성 추가 0. 도구: analyze_stock. (Only Money 9단 파이프라인 사상의 로컬 압축판)
-- `news.py` / `notify.py` — 뉴스 감시(구글뉴스 RSS, 날짜순) + **텔레그램** 푸시(send/format_digest). **2026-06-24 chat_id 연결 완료**(봇 @AbbysProject_comet_bot, chat_id 7295352748). 상시 스케줄러 = autonomy proactive.
+- `news.py` / `notify.py` — 뉴스 감시(구글뉴스 RSS, 날짜순) + **텔레그램** 푸시(send/format_digest). **2026-06-24 chat_id 연결 완료**(봇 @<봇핸들>, chat_id <chat_id>). 상시 스케줄러 = autonomy proactive.
 - `market_brief.py` — **일일 미국 증시 브리핑 생성기(좁게: 지수·반도체·특징주).** 숫자=prices(Yahoo 실측, 날조0), 사건=구글뉴스 RSS(최근 FRESH_DAYS=2일·날짜필터로 stale 차단), 종합·해석=27b 2패스(①종합 ②사실감사). gather()→generate(). proactive가 미장 마감 후 호출 예정(아직 미연결). ⚠️숫자 그라운딩 검증됨. 해석 깊이는 튜닝 중(사건 소스를 DuckDuckGo→뉴스RSS로 바꿔 stale 9월블로그 섞이던 문제 해결).
 - `autonomy.py` — **자율/상주 모드 레이어(comet 비대화 격리).** 모드=스레드+예외격리+가용성게이트. `ProactiveMode`(news.collect→판단게이트→notify.send, 모델0) · `WakeMode`(openwakeword 상시대기→voice STT→respond, 엔진없으면 available()=False). `Autonomy` 컨트롤러=enable/disable/status/restore + '자율모드 …' 명령 파서. 설정 autonomy_config.json. comet.py 가 `self.autonomy`로 생성·복원·토글만.
 - `cloud.py` — **클라우드 두뇌(멀티 프로바이더): 클로드(`/v1/messages`)·GPT·OpenAI호환.** 메인 대화 최종 답변만 클라우드로(로컬 기본·키 없으면 폴백). cost_guard 검문. `chat()`이 ollama와 동형 반환. 설정 cloud_config.json(모델), 키=환경변수 또는 cloud_keys.json(런타임 `키 클로드 …`로 재시작 없이 교체).
