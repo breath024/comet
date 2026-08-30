@@ -5,11 +5,13 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 import analyst
 
 Q = " ".join(sys.argv[1:]) or "엔비디아 지금 사도 될까"
-M14, M27 = "gemma4:26b", "gemma4:31b"
+# 이 파일만 31b 를 계속 참조한다 — 모델 A/B 비교가 존재 이유다.
+# 31b 를 지웠으면(ollama rm) B·C 는 안 돈다.
+M26, M31 = "gemma4:26b", "gemma4:31b"
 CONFIGS = [
-    ("A. 14b / 14b (현재 기본)", M14, M14),
-    ("B. 27b / 27b (전부 고성능)", M27, M27),
-    ("C. 27b / 14b (하이브리드 추천)", M27, M14),
+    ("A. 26b / 26b (현재 기본)", M26, M26),
+    ("B. 31b / 31b (전부 고성능, 매우 느림)", M31, M31),
+    ("C. 31b / 26b (하이브리드)", M31, M26),
 ]
 
 print(f"질문: {Q}\n수집(1회, 공통 근거)...")

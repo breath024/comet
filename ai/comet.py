@@ -5,7 +5,7 @@
 #
 #  구조:
 #   - 문지기 라우터: gemma4:12b 가 매 입력의 난이도를 판정
-#   - 3단 모델:  light=gemma4:12b / medium=gemma4:26b / heavy=gemma4:31b
+#   - 3단 모델:  light=gemma4:12b / medium=gemma4:26b / heavy=gemma4:26b(=medium)
 #   - 호흡(대기): 등급별 keep_alive 로 무거운 모델은 곧 VRAM 에서 증발
 #  의존성: ollama (파이썬) 하나. 음성/STT 는 다음 층에서 붙임.
 # ═══════════════════════════════════════════════════════════════
@@ -33,7 +33,10 @@ GATEKEEPER = "gemma4:12b"         # 문지기 = 항상 가벼운 모델
 TIERS = {
     "light":  {"model": "gemma4:12b",  "keep_alive": "10m", "desc": "잡담·즉답"},
     "medium": {"model": "gemma4:26b",  "keep_alive": "5m",  "desc": "기본 작업"},
-    "heavy":  {"model": "gemma4:31b",  "keep_alive": "30s", "desc": "신중한 큰 작업"},
+    # heavy 가 medium 과 같은 모델인 건 실수가 아니다 — 31b(dense 18.5GB)는 16GB 밖으로
+    # 넘쳐 한 문장에 117초였다(26b 는 7.9초). 26b 는 MoE(활성 4B)라 크기 대비 빠르다.
+    # 지금 heavy 를 가르는 건 모델이 아니라 keep_alive(30s = 쓰고 바로 VRAM 반납)뿐이다.
+    "heavy":  {"model": "gemma4:26b",  "keep_alive": "30s", "desc": "신중한 큰 작업"},
 }
 
 HISTORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "comet_history.json")
@@ -54,7 +57,7 @@ _client = ollama.Client(timeout=GEN_TIMEOUT)
 #    문지기 첫 호출에서 COMET 전체가 죽었다. `llm.py` 에는 `_resolve_local()` 이
 #    있는데 여기엔 없어서, 없는 모델 이름을 ollama 에 그대로 넘기고 있었다.
 #  ⚠️ **임시다. 제대로 고칠 것.** 아무 모델이나 잡으면 등급 설계(가벼운 잡담 vs
-#    신중한 큰 작업)가 소리 없이 무너진다 — light 자리에 31b 가 들어앉아도
+#    신중한 큰 작업)가 소리 없이 무너진다 — light 자리에 큰 모델이 들어앉아도
 #    "느리네" 말고는 티가 안 난다. 제대로 된 건 등급마다 후보 목록을 설정에서
 #    받는 것(`llm.py` 의 `local_fallbacks` 처럼). 지금은 **죽지는 않게** 까지만 한다.
 #    그래서 대체할 때마다 콘솔에 크게 찍는다 — 조용히 굴러가면 안 되는 상태다.
@@ -130,7 +133,7 @@ def _gen(model, messages, *, stream=False, keep_alive=None, fmt=None,
 
 
 # ── 게임/바쁨 모드: GPU가 게임 등으로 바쁘면 무거운 모델 대신 light 로 ────────
-#  16GB VRAM 한 장 → 게임이 GPU 점유 중이면 26b/31b 올리다 게임이 끊긴다.
+#  16GB VRAM 한 장 → 게임이 GPU 점유 중이면 26b 올리다 게임이 끊긴다.
 #  auto = 매 턴 nvidia-smi 한 번으로 판단. on/off = 수동 고정(게임모드 켜/꺼/자동).
 BUSY_GPU_UTIL      = 55      # % 이상이면 '바쁨'(게임 등이 GPU 점유 중)
 BUSY_VRAM_FREE_MIB = 4500    # 여유 VRAM 이 이보다 적으면 '바쁨'(무거운 모델 못 올림)
@@ -1295,7 +1298,7 @@ BANNER = """══════════════════════�
   COMET  ·  Cognitive Operation Management
             & Electronic Transmission
 ═══════════════════════════════════════════════════
-  3단 모델:  light=gemma4:12b  medium=gemma4:26b  heavy=gemma4:31b
+  3단 모델:  light=gemma4:12b  medium=gemma4:26b  heavy=gemma4:26b
   명령어:  음성(v) | 말하기 | 소리작게/소리크게 | 상태 | 잠자 | 요약 | 리셋 | 종료
 ═══════════════════════════════════════════════════"""
 

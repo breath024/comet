@@ -30,8 +30,7 @@ DEFAULTS = {
     #  qwen3-coder:30b = MoE(30B/3.3B활성) 코딩 1위급·툴콜 강함(살짝 흘러도 빠름)
     #  devstral        = Mistral 에이전트 전용 24B·툴콜 형식 가장 안정(완전 적재)
     "local_model":  "qwen3-coder:30b",
-    "local_fallbacks": ["devstral", "gemma4:26b",
-                        "gemma4:31b", "gemma4:12b"],
+    "local_fallbacks": ["devstral", "gemma4:26b", "gemma4:12b"],
     "keep_alive":   "10m",
     # 한 번 호출의 출력 토큰 상한(로컬=num_predict, API=max_tokens). 폭주 차단.
     #  · 로컬: 한 스텝이 만 토큰씩 토하며 29분 걸리는 사고 방지(시간).

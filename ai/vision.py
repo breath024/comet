@@ -8,8 +8,8 @@ import tempfile
 import ollama
 from PIL import ImageGrab
 
-VISION_MODEL = "gemma4:12b"     # 멀티모달. 더 정밀히 보려면 gemma4:31b(느림)
-HOLDINGS_MODEL = "gemma4:31b"  # 표·숫자 읽기는 정밀해야 하니 31b
+VISION_MODEL = "gemma4:12b"     # 멀티모달. 더 정밀히 보려면 gemma4:26b
+HOLDINGS_MODEL = "gemma4:26b"  # 표·숫자 읽기는 정밀해야 하니 한 단계 위. 26b 도 vision 된다
 MAX_WIDTH = 1280               # 캡처 축소 — 속도/토큰 절약
 
 # ── 안정성: 얼어붙은 ollama 대비 타임아웃 + 출력 상한(설명/표 폭주 차단). 27b 홀딩스라 300s.

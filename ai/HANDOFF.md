@@ -150,7 +150,8 @@ A.B.B.Y.S 프로젝트의 두뇌 레이어 (VOID의 형제).
 ## 모델 (3단 라우터)
 - **light = gemma4:12b** — 문지기(난이도 판정)·잡담·화면인식(vision)
 - **medium = gemma4:26b** — 기본 작업·도구·기억질문. (26b-a4b = MoE, 활성 4B라 크기 대비 빠름)
-- **heavy = gemma4:31b** — 신중한 큰 작업·종목분석·표 읽기. (dense 31B, 16GB 카드엔 일부 CPU 오프로드 = 느림. 등급 설계상 감수)
+- **heavy = gemma4:26b** — 신중한 큰 작업·종목분석·표 읽기. **medium 과 같은 모델이다**(아래 참고).
+  지금 heavy 를 가르는 건 모델이 아니라 `keep_alive`(30s = 쓰고 바로 VRAM 반납)뿐이다.
 - 문지기 gemma4:12b가 매 입력을 light/medium/heavy로 판정. "무겁게/가볍게"로 수동 오버라이드.
 - 호흡: 등급별 keep_alive로 무거운 모델은 곧 VRAM에서 자동 언로드.
 
@@ -159,6 +160,7 @@ A.B.B.Y.S 프로젝트의 두뇌 레이어 (VOID의 형제).
 COMET이 문지기 호출부터 죽었다(`comet.py`의 `_gen()`은 `llm.py`와 달리 **설치 안 된 모델을 폴백하지 않는다**).
 설치된 모델로 맞추는 대신 세대를 올렸다. 매핑은 1:1:
 `gemma3:4b→gemma4:12b` / `qwen3:14b→gemma4:26b` / `gemma3:27b→gemma4:31b` (py 9개 파일 29곳).
+**그 뒤 heavy 는 다시 26b 로 내렸다 — 아래 실측 참고.**
 
 - **부수 효과: 이제 3단이 전부 tools·vision·thinking을 지원한다.** 옛 light(gemma3:4b)는 tool 자체가 없어
   기억 작업이면 강제로 medium 승급이었다. gemma4:12b는 tools가 되지만 **승급은 그대로 뒀다** —
@@ -172,12 +174,21 @@ COMET이 문지기 호출부터 죽었다(`comet.py`의 `_gen()`은 `llm.py`와 
   |---|---|---|---|
   | light | gemma4:12b | 11.8s | **7.7s** |
   | medium | gemma4:26b | 25.8s | **7.9s** |
-  | heavy | gemma4:31b | 130.8s | **117.2s** |
+  | heavy | gemma4:31b | 130.8s | **117.2s** | ← 못 씀
 
   medium 이 light 와 같은 속도인 건 26b가 **MoE(활성 4B)** 라서다. 크기(17.3GB)만 크지 실제 계산은 가볍다.
-  **heavy(31b)는 dense 31B라 18.5GB → 16GB 밖으로 넘쳐 매 토큰이 CPU를 탄다. 한 문장에 2분.**
-  ⚠️ `analyst.py`·`market_brief.py`·`onlymoney_analyst.py`·`vision.read_holdings` 가 heavy 를 쓴다.
-  종목분석은 옛날 1.5분이었는데 이대로면 훨씬 길어진다. **heavy 를 26b로 내릴지는 호윤 판단 대기.**
+  heavy(31b)는 dense 31B라 18.5GB → 16GB 밖으로 넘쳐 매 토큰이 CPU를 탔다. **한 문장에 2분.**
+
+**heavy 를 26b 로 내렸다 (2026-08-31, 호윤 지시 "heavy도 26b로 내려").**
+재실측: light 7.5s · medium 7.6s · **heavy 7.5s** — 117.2s → 7.5s, 15배.
+`analyst.py`·`market_brief.py`·`onlymoney_analyst.py`·`vision.HOLDINGS_MODEL` 전부 26b 로 같이 내렸다.
+이것들이 heavy 를 쓰기 때문에, 안 내렸으면 종목분석 한 번에 십몇 분이 걸렸다(옛날엔 1.5분).
+
+⚠️ **그래서 지금 medium 과 heavy 는 같은 모델이다. 실수가 아니다.**
+16GB 한 장에서 26b(MoE) 위로는 dense 밖에 없고, dense 는 어떤 크기든 넘쳐서 못 쓴다.
+등급이 여전히 의미 있는 건 `keep_alive`(heavy=30s 로 바로 반납)와 프롬프트 쪽이다.
+**진짜로 더 센 판단이 필요하면 모델이 아니라 `cloud.py`(클라우드 승급)로 가야 한다.**
+`gemma4:31b` 는 안 지웠다 — `_compare.py` 가 A/B 비교용으로 참조한다. 18.5GB 아까우면 `ollama rm`.
 - 문지기 판정 검증 OK: "안녕"→light(인사) / "엔비디아 지금 사도 될까"→medium / "퀵소트 짜줘"→medium.
   JSON 판정이 gemma4:12b 에서도 깨지지 않는다(이게 죽어서 COMET 전체가 안 돌았다).
 - **아직 안 본 것: 실사용 대화 한 판.** `<think>` 필터·한국어 톤·도구 호출은 연기시험만 했지 안 돌려봤다.
@@ -189,7 +200,7 @@ COMET이 문지기 호출부터 죽었다(`comet.py`의 `_gen()`은 `llm.py`와 
 `ollama.list()` 는 세션당 한 번만 부르고 결과를 `_ALIAS` 에 캐시한다.
 
 ⚠️ **이건 임시다.** 대체가 일어나면 등급 설계(가벼운 잡담 vs 신중한 큰 작업)가 어긋나는데
-`light` 자리에 31b 가 들어앉아도 "느리네" 말고는 티가 안 난다. 그래서 대체할 때마다
+`light` 자리에 큰 모델이 들어앉아도 "느리네" 말고는 티가 안 난다. 그래서 대체할 때마다
 콘솔에 ⚠️ 를 크게 찍는다 — **그 줄이 보이면 TIERS 를 실제 설치 모델로 고치라는 뜻이다.**
 제대로 된 건 등급마다 후보 목록을 설정에서 받는 것(`llm.py` 의 `local_fallbacks` 처럼).
 
@@ -254,7 +265,7 @@ COMET이 문지기 호출부터 죽었다(`comet.py`의 `_gen()`은 `llm.py`와 
 - **코인봇 승률:** profile의 `project_coin_bot.md`엔 "승률 80%"(호윤 옛 주장), 실제 데이터 계산은 **46%**. 도구(trade_stats)가 답할 땐 46%(정확). 일반 대화에서 80% 나오면 profile 때문 — 도구 경유가 맞음.
 - **도구 단일 동작:** 한 턴에 동작 하나 → "백테스트가 실거래보다 나아?" 같은 비교는 일반론으로 빠짐(따로 물으면 정확).
 - **profile 정적 스냅샷:** 내 메모리 갱신돼도 자동 동기화 안 됨 → `profile/`에 .md 재복사 필요.
-- **화면인식:** light(gemma4:12b)라 디테일 한계. 정밀히 = `vision.py`의 `VISION_MODEL`을 gemma4:31b로(느림).
+- **화면인식:** light(gemma4:12b)라 디테일 한계. 정밀히 = `vision.py`의 `VISION_MODEL`을 gemma4:26b로.
 - **CLI/컴퓨터 제어:** 호윤이 "에바"라며 보류. 안 만듦.
 - torch가 CPU 빌드(CUDA False) — Whisper STT는 CPU. 로컬 XTTS 목소리복제 하려면 Blackwell CUDA 먼저 고쳐야.
 

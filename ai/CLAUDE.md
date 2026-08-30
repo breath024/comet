@@ -14,7 +14,7 @@
 | `comet_memory.db` | 기억 DB (SQLite, `memory` 테이블) |
 | `profile/` | 호윤 메모리 미러 (Claude Code memory → 여기 동기화) |
 | `web.py` | 웹 검색 (DuckDuckGo 원천 추적) |
-| `analyst.py` | 종목 분석 2패스 (컨센서스→역발상, gemma4:31b 고정) |
+| `analyst.py` | 종목 분석 2패스 (컨센서스→역발상, gemma4:26b 고정) |
 | `marketlog.py` | 정세 로그 (날짜별 흐름, market_log.db) |
 | `financials.py` | 재무 실적 (Yahoo 무키 crumb) |
 | `prices.py` | 라이브 시세 (환율/코인/주가/공포탐욕) |
@@ -30,7 +30,7 @@
 ## 3단 모델 구조
 - `light` = gemma4:12b (잡담·즉답)
 - `medium` = gemma4:26b (기본 작업, 도구 처리)
-- `heavy` = gemma4:31b (복잡 코드·신중한 추론)
+- `heavy` = gemma4:26b (복잡 코드·신중한 추론) — medium 과 같은 모델. keep_alive 만 다르다
 - 게이트키퍼(분류기): gemma4:12b
 - 클라우드 전환: `cloud.py` — `allow_cloud=True` 호출에서만 클라우드로 라우팅
 
