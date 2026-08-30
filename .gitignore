@@ -1,0 +1,55 @@
+# --- 비밀정보 ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets*
+credentials*
+*token*.txt
+api.txt
+
+# --- 파이썬 ---
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+env/
+*.egg-info/
+
+# --- 노드 ---
+node_modules/
+dist/
+.next/
+
+# --- OS/에디터 ---
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+
+# --- 로그/DB/캐시 ---
+*.log
+logs/
+*.db
+*.sqlite
+*.sqlite3
+.cache/
+
+# --- 실제 토큰/설정 (예시파일만 올림) ---
+ai/telegram_config.json
+ai/daemon_token.txt
+
+# --- 개인 기억·프로필·대화기록 ---
+ai/profile/
+ai/comet_history.json
+ai/history.json
+ai/comet_usage.json
+ai/*.db
+
+# --- 대용량 모델 ---
+*.onnx
+*.gguf
+*.pt
+*.bin
+*.safetensors

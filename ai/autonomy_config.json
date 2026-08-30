@@ -1,0 +1,17 @@
+{
+  "proactive": {
+    "enabled": false,
+    "interval_sec": 600,
+    "min_general": 5
+  },
+  "brief": {
+    "enabled": true,
+    "hour": 7,
+    "check_sec": 600,
+    "last_date": "2026-07-10"
+  },
+  "wake": {
+    "enabled": false,
+    "phrase": "코멧"
+  }
+}
