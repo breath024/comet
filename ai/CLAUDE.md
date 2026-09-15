@@ -1,5 +1,8 @@
 # COMET — 핸드오프 요약
 
+> **손대기 전에 `ISSUES.md` 부터** — 호윤이 COMET 에 `이슈 …` 로 던져둔 문제 목록(자동 생성).
+> 고쳤으면 COMET 에 `이슈 닫기 번호 해결내용` (또는 `issue_box.close(번호, "내용")`).
+
 ## 실행
 - `run.bat` → `comet.py` (Python 3.12)
 - `run_daemon.bat` → 상주 서버 (HTTPS + Tailscale, 폰 웹UI)
@@ -23,6 +26,9 @@
 | `onlymoney_analyst.py` | Only Money 9단 파이프라인 분석 (포트·시세·심리) |
 | `autonomy.py` | 자율/상주 모드 (먼저 말 걸기·부르면 듣기) |
 | `notify.py` | 텔레그램 전송 (자동 브리핑/뉴스 + "텔레그램으로 보내줘" 온디맨드) |
+| `issues.py` | AI·경제 이슈 알림 — 뉴스·커뮤니티 수집 → 강도(굵직/볼만함/잔잔) → 배너+음성. `python issues.py --sources` = 소스 생존 확인 |
+| `toast.py` | 화면 위 가운데 알약형 배너 (별도 프로세스, 포커스 안 뺏음) |
+| `issue_box.py` | 이슈 접수함 — memory 테이블 kind='issue', 바뀔 때마다 `ISSUES.md` 로 내보냄 |
 | `daemon.py` | 상주 서버 (HTTPS, 폰 웹UI 음성) |
 | `coder_bridge.py` | "코딩 @폴더 /스킬 할일" 명령 → 코딩 에이전트 |
 | `council.py` | "회의 주제" 명령 → 다중 에이전트 토론 |
