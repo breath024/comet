@@ -298,6 +298,14 @@ HELP_TEXT = """COMET 기능 목록
 [모드]
   게임모드 / 게임모드켜 / 게임모드꺼 / 게임모드자동 — VRAM 양보 모드
   자율모드 / 자율모드켜 / 자율모드꺼 — 먼저 말 걸기 모드
+  알림 — AI·경제 이슈 알림 상태 (화면 위 배너 + 음성)
+  알림 ai 굵직|보통|전부|끔 / 알림 경제 … — 분야별 강도
+  알림 지금 / 알림 테스트 / 알림 기록 / 알림 조용 2-8 / 알림 끔
+
+[이슈 접수함]
+  이슈 웹검색 결과가 이상함 — 접수 (기능별 자동 분류)
+  이슈 / 이슈 전체 — 열린 것 / 닫힌 것까지
+  이슈 닫기 3 해결내용 / 이슈 다시 3
 
 [기타]
   프로필갱신 — 클로드 메모리 → COMET profile/ 미러
@@ -756,6 +764,17 @@ class Comet:
         if low in ("게임모드자동", "게임모드auto"):
             self.game_mode = "auto"
             return "게임모드 자동 — GPU 바쁘면 알아서 가볍게."
+        # ── 이슈 접수함 (쓰다가 이상한 것 한 줄로 던져두기 → 고쳐지면 닫기) — issue_box.py ──
+        if t.strip().startswith("이슈"):
+            import issue_box
+            ans = issue_box.command(t)
+            if ans is not None:          # None = "이슈가 뭐야?" 같은 일반 질문 → 대화로 흘림
+                return ans
+        # ── 이슈 알림(AI·경제 강도별) — 로직은 autonomy.issues_command / issues.py ──
+        if low == "알림" or low.startswith(("알림ai", "알림에이아이", "알림경제", "알림끔", "알림꺼",
+                                             "알림지금", "알림점검", "알림테스트", "알림기록",
+                                             "알림로그", "알림조용", "알림상태")):
+            return self.autonomy.issues_command(low)
         # ── 자율/상주 모드 토글 (콘솔·폰 공용) ──
         if low.startswith("자율모드") or low.startswith("자율 모드"):
             return self.autonomy.command(low)

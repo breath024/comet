@@ -27,6 +27,10 @@ DEFAULTS = {
     "proactive": {"enabled": False, "interval_sec": 600, "min_general": 5},
     "brief":     {"enabled": False, "hour": 7, "check_sec": 600, "last_date": ""},
     "wake":      {"enabled": False, "phrase": "코멧"},
+    # issues: AI·경제 소식을 강도(굵직/볼만함/잔잔)로 걸러 화면 배너 + 음성. 로직은 issues.py
+    #   modes 값 = 끔 | 굵직 | 보통 | 전부.  quiet = [시작시, 끝시] 이 시간엔 소리 없이 배너만(없으면 [])
+    "issues":    {"enabled": False, "interval_sec": 900,
+                  "modes": {"ai": "굵직", "econ": "굵직"}, "quiet": []},
 }
 
 
@@ -206,6 +210,41 @@ class BriefMode(_Mode):
 
 
 # ═══════════════════════════════════════════════════════════════
+#  issues — AI·경제 이슈를 강도로 걸러 화면 위 배너 + 음성으로 (먼저 말 걸기)
+#   처음 켤 때는 지금 떠 있는 소식을 '본 것'으로만 등록한다(켜자마자 수십 건 쏟아지는 것 방지).
+#   GPU 바쁨(게임) = 배너 생략·소리만 / quiet 시간 = 소리 생략·배너만 — issues.check 가 처리.
+# ═══════════════════════════════════════════════════════════════
+class IssuesMode(_Mode):
+    name = "issues"
+    desc = "AI·경제 이슈를 강도별로 걸러 화면 배너 + 음성으로 알림"
+
+    def __init__(self, cfg, log, gpu_busy_fn=None):
+        super().__init__(cfg, log)
+        self.gpu_busy_fn = gpu_busy_fn
+
+    def check_now(self, dry=False):
+        import issues
+        return issues.check(dict(self.cfg.get("modes") or {}), gpu_busy_fn=self.gpu_busy_fn,
+                            quiet_hours=self.cfg.get("quiet") or None, log=self.log, dry=dry)
+
+    def _run(self):
+        import issues
+        interval = max(300, int(self.cfg.get("interval_sec", 900)))
+        try:
+            if not issues._load(issues.SEEN_FILE, []):
+                issues.check(dict(self.cfg.get("modes") or {}), log=self.log, baseline=True)
+                self.log("[issues] 처음 켬 — 지금 떠 있는 소식은 본 것으로 등록(다음 점검부터 새 소식만)")
+        except Exception as e:
+            self.log(f"[issues] 베이스라인 실패: {e}")
+        self.log(f"[issues] 가동 — {interval // 60}분마다 · {self.cfg.get('modes')}")
+        while not self._stop.wait(interval):
+            try:
+                self.check_now()
+            except Exception as e:
+                self.log(f"[issues] 점검 오류: {e}")
+
+
+# ═══════════════════════════════════════════════════════════════
 #  wake — '코멧' 깨우는 말 상시 대기 → 응답 (부르면 듣기)
 #   wake-word 엔진(openwakeword) 이 깔려 있어야 켜진다. 없으면 설치 안내.
 #   엔진 + 마이크가 준비되면 _run 의 리스너를 연결한다.
@@ -283,6 +322,7 @@ class Autonomy:
                                    save_fn=lambda: _save_cfg(self.cfg)),
             "wake":      WakeMode(self.cfg["wake"], self.log,
                                   respond_fn=respond_fn, speak_fn=speak_fn),
+            "issues":    IssuesMode(self.cfg["issues"], self.log, gpu_busy_fn=gpu_busy_fn),
         }
 
     # 저장된 enabled 모드 복원(데몬/콘솔 시작 시 호출)
@@ -322,6 +362,78 @@ class Autonomy:
             tail = "" if (avail or m.is_on()) else f"  (불가: {why})"
             lines.append(f"  · {name:9s} {on} — {m.desc}{tail}")
         return "\n".join(lines)
+
+    # comet 의 "알림 ..." 한 줄 명령 파서 (low = 공백 뺀 소문자)
+    #   알림                → 상태
+    #   알림 ai 굵직|보통|전부|끔 / 알림 경제 ...   → 분야별 모드 (하나라도 켜지면 자율모드 issues 도 켬)
+    #   알림 끔             → 전부 끔 / 알림 지금 → 바로 한 번 점검 / 알림 테스트 → 배너+음성 샘플
+    #   알림 조용 2-8       → 2시~8시엔 소리 없이 배너만 / 알림 조용 끔
+    #   알림 기록           → 최근 알린 것
+    def issues_command(self, low):
+        import issues
+        body = low.replace("알림", "", 1).strip()
+        m = self.modes["issues"]
+        c = self.cfg["issues"]
+        cats = {"ai": "ai", "에이아이": "ai", "경제": "econ", "econ": "econ"}
+
+        def _sync():
+            want = any(issues.MODE_MIN.get(v, 99) <= 3 for v in c["modes"].values())
+            if want and not m.is_on():
+                self.enable("issues")
+            elif not want and m.is_on():
+                self.disable("issues")
+            else:
+                _save_cfg(self.cfg)
+
+        if body in ("", "상태", "status"):
+            q = c.get("quiet") or []
+            return ("이슈 알림: " + ("켜짐" if m.is_on() else "꺼짐") + " — "
+                    + " · ".join(f"{issues.CAT_NAME[k]} {v}" for k, v in c["modes"].items())
+                    + f" · {c.get('interval_sec', 900) // 60}분마다"
+                    + (f" · 조용한 시간 {q[0]}~{q[1]}시" if q else "")
+                    + "\n바꾸기: 알림 ai 보통 / 알림 경제 굵직 / 알림 끔 / 알림 지금 / 알림 테스트 / 알림 기록")
+        if body in ("끔", "꺼", "off"):
+            for k in c["modes"]:
+                c["modes"][k] = "끔"
+            _sync()
+            return "이슈 알림 전부 끔."
+        if body in ("지금", "점검", "now"):
+            r = m.check_now()
+            n = sum(r.values())
+            return f"지금 점검 — 새로 알린 것 {n}건." if n else "지금 점검 — 새로 알릴 만한 건 없어."
+        if body in ("테스트", "test"):
+            issues.deliver("ai", [{"level": 3, "title": "테스트 알림", "ko": "알림 테스트야, 잘 보이면 된 거야",
+                                   "why": "COMET 이슈 알림 테스트"}], log=self.log)
+            return "테스트 배너·음성 보냈어."
+        if body in ("기록", "로그", "log"):
+            rows = issues._load(issues.LOG_FILE, [])[-8:]
+            if not rows:
+                return "아직 알린 기록 없음."
+            return "최근 알림:\n" + "\n".join(
+                f"  {r['at'][5:16]} [{issues.CAT_NAME.get(r['cat'], r['cat'])}·{issues.LEVEL_NAME.get(r['level'])}] "
+                f"{r.get('ko') or r['title']}" for r in reversed(rows))
+        if body.startswith("조용"):
+            rest = body[2:]
+            if rest in ("끔", "꺼", "해제", "off"):
+                c["quiet"] = []
+                _save_cfg(self.cfg)
+                return "조용한 시간 해제 — 언제든 소리 냄."
+            mm = __import__("re").match(r"(\d{1,2})[-~](\d{1,2})", rest)
+            if not mm:
+                return "예: 알림 조용 2-8 (2시~8시엔 소리 없이 배너만) / 알림 조용 끔"
+            c["quiet"] = [int(mm.group(1)) % 24, int(mm.group(2)) % 24]
+            _save_cfg(self.cfg)
+            return f"조용한 시간 {c['quiet'][0]}~{c['quiet'][1]}시 — 그 사이엔 배너만."
+        for key, cat in cats.items():
+            if body.startswith(key):
+                level = body[len(key):]
+                if level not in issues.MODE_MIN:
+                    return f"{issues.CAT_NAME[cat]} 알림 강도: 굵직 / 보통 / 전부 / 끔 (예: 알림 {key} 굵직)"
+                c["modes"][cat] = level
+                _sync()
+                desc = {"굵직": "굵직한 것만", "보통": "볼만한 것부터", "전부": "잔잔한 것까지 전부", "끔": "안 알림"}
+                return f"{issues.CAT_NAME[cat]} 알림 → {level} ({desc[level]})."
+        return "알림 사용법: 알림 / 알림 ai 굵직|보통|전부|끔 / 알림 경제 … / 알림 끔 / 알림 지금 / 알림 테스트 / 알림 기록 / 알림 조용 2-8"
 
     # comet 의 "자율모드 ..." 한 줄 명령 파서
     def command(self, low):

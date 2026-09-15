@@ -13,5 +13,14 @@
   "wake": {
     "enabled": false,
     "phrase": "코멧"
+  },
+  "issues": {
+    "enabled": false,
+    "interval_sec": 900,
+    "modes": {
+      "ai": "굵직",
+      "econ": "굵직"
+    },
+    "quiet": []
   }
 }
