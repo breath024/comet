@@ -51,11 +51,31 @@ PLAN_PROMPT = (
 #    출력 상한(num_predict)은 아래 각 호출에 이미 박힘(1300/1800) → 폭주는 이미 차단됨.
 _AC = ollama.Client(timeout=600)
 
+# ── 사고(thinking) 끄기 (2026-09-15) ────────────────────────────────────
+#  gemma4 는 reasoning 모델이고, num_predict 는 사고+본문을 합쳐서 센다.
+#  아래 상한(512/1300/1800)을 사고가 다 먹으면 본문이 0자로 나온다 = 빈 분석.
+#  comet.py 의 _gen 과 같은 처방: 사고를 끈다. (think 를 모르는 모델이면 한 번 실패하고 뺀다)
+_NO_THINK = set()
+
+
+def _chat(**kw):
+    """_AC.chat + think=False. think 인자를 거부하는 모델이면 그 모델만 빼고 재시도."""
+    if kw.get("model") not in _NO_THINK:
+        kw.setdefault("think", False)
+    try:
+        return _AC.chat(**kw)
+    except Exception as e:
+        if "think" in kw and "think" in str(e).lower():
+            _NO_THINK.add(kw["model"])
+            kw.pop("think")
+            return _AC.chat(**kw)
+        raise
+
 
 def _plan_languages(query, model=PLANNER_MODEL):
     """종목/테마와 엮인 나라들을 골라 현지어 검색어를 짠다. 실패 시 한국어+영어 폴백."""
     try:
-        r = _AC.chat(model=model, format="json",
+        r = _chat(model=model, format="json",
                      options={"temperature": 0, "num_predict": 512},
                      messages=[{"role": "user", "content": PLAN_PROMPT + query}])
         targets = (json.loads(r["message"]["content"]) or {}).get("targets") or []
@@ -518,7 +538,7 @@ def judge(ev, model1, model2=None, keep_alive="5m", verbose=True, trace=None):
 
     # 1차: 컨센서스 + 2차효과
     try:
-        r1 = _AC.chat(
+        r1 = _chat(
             model=model1, keep_alive=keep_alive,
             options={"temperature": 0.1, "num_predict": 1300},
             messages=[{"role": "system", "content": CONSENSUS_SYS},
@@ -557,7 +577,7 @@ def judge(ev, model1, model2=None, keep_alive="5m", verbose=True, trace=None):
 
     # 2차: 역발상 + 사실 감사 (이중 판단)
     try:
-        r2 = _AC.chat(
+        r2 = _chat(
             model=model2, keep_alive=keep_alive,
             options={"temperature": 0, "num_predict": 1800},
             messages=[{"role": "system", "content": CHALLENGER_SYS},

@@ -15,6 +15,25 @@ MAX_WIDTH = 1280               # 캡처 축소 — 속도/토큰 절약
 # ── 안정성: 얼어붙은 ollama 대비 타임아웃 + 출력 상한(설명/표 폭주 차단). 27b 홀딩스라 300s.
 _VC = ollama.Client(timeout=300)
 
+# ── 사고(thinking) 끄기 (2026-09-15) ────────────────────────────────────
+#  gemma4 는 reasoning 모델이라 사고와 본문이 num_predict 상한을 나눠 쓴다.
+#  아래 상한(1024/1536)을 사고가 다 먹으면 화면 설명·보유표가 빈 문자열로 나온다.
+_NO_THINK = set()
+
+
+def _chat(**kw):
+    """_VC.chat + think=False. think 를 모르는 모델이면 그 모델만 빼고 재시도."""
+    if kw.get("model") not in _NO_THINK:
+        kw.setdefault("think", False)
+    try:
+        return _VC.chat(**kw)
+    except Exception as e:
+        if "think" in kw and "think" in str(e).lower():
+            _NO_THINK.add(kw["model"])
+            kw.pop("think")
+            return _VC.chat(**kw)
+        raise
+
 _DIR = os.path.dirname(os.path.abspath(__file__))
 HOLDINGS_FILE = os.path.join(_DIR, "holdings.txt")
 
@@ -49,7 +68,7 @@ def look(question: str = "", persona: str = "") -> str:
             "content": question.strip() or "지금 화면에 뭐가 보이는지 한국어로 설명해줘.",
             "images": [path],
         })
-        r = _VC.chat(model=VISION_MODEL, messages=msgs, keep_alive="5m",
+        r = _chat(model=VISION_MODEL, messages=msgs, keep_alive="5m",
                      options={"num_predict": 1024})
         return (r.get("message", {}).get("content", "") or "").strip()
     finally:
@@ -62,7 +81,7 @@ def read_holdings(model=None) -> dict:
        analyst가 '내 보유 기준' 분석에 쓴다. 정밀 위해 기본 27b."""
     path = capture_screen()
     try:
-        r = _VC.chat(
+        r = _chat(
             model=model or HOLDINGS_MODEL, keep_alive="2m",
             options={"num_predict": 1536},
             messages=[{"role": "user", "content": HOLDINGS_PROMPT, "images": [path]}])

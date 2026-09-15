@@ -14,6 +14,7 @@ import sys
 import re
 import json
 import subprocess
+import itertools
 import ollama
 
 # ── 한글 윈도우 콘솔 UTF-8 강제 ──────────────────────────────────
@@ -45,6 +46,8 @@ MAX_HISTORY  = 40                 # 모델에 넘기는 최근 대화 메시지 
 # ── 안정성: 모델 호출 상한 (데몬이 한 턴에 얼어붙는 것 방지) ──────────
 #  · num_predict 상한 = 한 생성이 폭주(만 토큰)해도 잘려서 _lock 을 오래 안 쥠.
 #    비서 답은 1~3문장이라 1024 는 넉넉(정상 답은 안 잘리고 폭주만 막음).
+#    ★단 이 상한은 '사고 토큰'까지 같이 센다 — 아래 _gen 의 think 주석 참고.
+#      사고를 켠 채 이 상한을 쓰면 본문이 0자로 나온다(2026-09-15 실측).
 #  · timeout = ollama 서버가 얼면(토큰 사이 무응답) 그 턴만 끊고 데몬은 산다.
 #  모든 ollama.chat 은 아래 _gen() 으로 통일한다. (vision.py·analyst.py 는 별도 — 후속)
 MAX_REPLY_TOKENS = 1024
@@ -102,9 +105,34 @@ def _resolve(model):
     return pick
 
 
+# ── 추론형 모델의 '사고'는 기본으로 끈다 (2026-09-15) ────────────────────
+#  gemma4 는 reasoning 모델이라 사고(thinking)를 본문과 **별도 필드**로 뱉는데,
+#  num_predict 상한은 사고+본문을 **합쳐서** 센다. 상한 1024 를 사고가 다 먹으면
+#  본문이 0자로 나온다 = 빈 답. 실측(실제 SYSTEM 9,559자 / "나 요즘 뭐 만들고 있지?"):
+#      사고 켬 + 1024 → 14.7초, 사고 2,845자, 본문   0자   ← 빈 답의 정체
+#      사고 켬 + 4096 → 16.9초, 사고 3,674자, 본문  86자
+#      사고 끔        →  2.7초, 사고     0자, 본문 120자   ← 답도 이게 제일 낫다
+#  컨텍스트가 길수록 사고가 길어져 더 확실히 벙어리가 된다(= "많이 넣으면 대화가 안 된다").
+#  그래서 _gen 기본값을 think=False 로 둔다. 사고가 필요한 자리만 think=True 로 켜고,
+#  그때는 num_predict 를 사고 몫까지 올려 잡아라(4096+). think=None 이면 인자 자체를 안 붙인다.
+_NO_THINK = set()      # think 인자를 거부하는 모델 — 한 번 겪으면 그 뒤로 안 붙인다
+
+
+def _chat_call(kw):
+    """_client.chat 호출. 스트리밍이면 첫 조각까지 당겨서 서버 오류를 여기서 터뜨린다
+       (스트림은 호출 시점이 아니라 순회 시점에 에러가 나므로, 밖에서 못 잡는다)."""
+    r = _client.chat(**kw)
+    if kw.get("stream"):
+        it = iter(r)
+        first = next(it)
+        return itertools.chain([first], it)
+    return r
+
+
 def _gen(model, messages, *, stream=False, keep_alive=None, fmt=None,
-         temperature=None, num_predict=MAX_REPLY_TOKENS, allow_cloud=False):
-    """ollama.chat 단일 통로 — 출력 상한 + 타임아웃을 항상 건다.
+         temperature=None, num_predict=MAX_REPLY_TOKENS, allow_cloud=False,
+         think=False):
+    """ollama.chat 단일 통로 — 출력 상한 + 타임아웃 + 사고(think) 제어를 항상 건다.
        기존 호출의 동작(format/temperature/keep_alive)은 넘긴 대로 보존.
        allow_cloud=True(최종 답변 생성만) + 클라우드 두뇌가 켜져 있으면 그쪽으로 보낸다.
        문지기·도구선택(allow_cloud=False)은 항상 로컬 = 매 턴 과금 방지."""
@@ -129,7 +157,16 @@ def _gen(model, messages, *, stream=False, keep_alive=None, fmt=None,
         kw["format"] = fmt
     if opts:
         kw["options"] = opts
-    return _client.chat(**kw)
+    if think is not None and kw["model"] not in _NO_THINK:
+        kw["think"] = think
+    try:
+        return _chat_call(kw)
+    except Exception as e:
+        if "think" in kw and "think" in str(e).lower():
+            _NO_THINK.add(kw["model"])      # 이 모델은 think 를 모른다 → 두 번은 안 물어본다
+            kw.pop("think")
+            return _chat_call(kw)
+        raise
 
 
 # ── 게임/바쁨 모드: GPU가 게임 등으로 바쁘면 무거운 모델 대신 light 로 ────────
@@ -467,13 +504,20 @@ def _stream_filtered(model, messages, cfg, temperature=None):
        (여는 태그가 프롬프트 쪽에 미리 박혀 실제 생성 토큰엔 안 잡히는 경우) — 그 경우
        실시간 토큰 단위 필터로는 이미 화면에 새 나간 뒤라 못 잡으므로, 통째로 받아
        두 패턴(짝 있는 <think>...</think> / 여는 태그 누락) 모두 제거한 뒤에 내보낸다."""
-    chunks = []
+    chunks, thought = [], 0
     for part in _gen(model, messages, stream=True, keep_alive=cfg["keep_alive"],
                      temperature=temperature, allow_cloud=True):
-        tok = part.get("message", {}).get("content", "")
+        msg = part.get("message", {}) or {}
+        tok = msg.get("content", "")
         if tok:
             chunks.append(tok)
+        thought += len(msg.get("thinking", "") or "")   # 사고는 별도 필드 — 본문에 안 섞는다
     full = "".join(chunks)
+    if not full and thought:
+        # 사고가 켜진 채 상한을 다 먹은 경우. 조용히 빈 문자열을 돌려주면 "멍청하다"로 보인다.
+        print("", file=sys.stderr)
+        print(f"  [경고] 본문 0자 / 사고 {thought}자 — 사고 토큰이 num_predict 를 다 먹었다. "
+              f"think=False 로 두거나 num_predict 를 올려라.", file=sys.stderr)
     full = re.sub(r"<think>.*?</think>", "", full, flags=re.S)
     full = re.sub(r"^.*?</think>", "", full, flags=re.S)   # 여는 태그 누락 대비
     full = full.strip()
