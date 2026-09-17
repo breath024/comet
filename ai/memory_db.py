@@ -41,6 +41,11 @@ def remember(kind: str, content: str) -> dict:
         kind = "memo"
     if not content or not content.strip():
         return {"ok": False, "msg": "내용이 비었음"}
+    if kind == "todo":
+        # 대화 중에 모델이 저장한 할일도 명령으로 넣은 것과 똑같이 취급한다 —
+        # 프로젝트 태그·마감일이 붙어야 목록에서 같이 보인다(입구만 둘, 저장은 한 곳).
+        import todo_box                          # 지연 임포트 = 순환 참조 방지
+        return todo_box.add(content)
     now = _now()
     with _conn() as c:
         cur = c.execute(
@@ -75,21 +80,13 @@ def recall(query: str = "", limit: int = 5) -> dict:
 
 
 def list_todos(status: str = "open") -> dict:
+    # 목록 모양(프로젝트별·마감 임박순)은 todo_box 한 곳에서만 만든다 — 대화로 물어도
+    # 명령(`할일`)으로 물어도 같은 화면이 나오게. 모델에는 text 를 그대로 옮기게 한다.
+    import todo_box                              # 지연 임포트 = 순환 참조 방지
     status = (status or "open").strip().lower()
-    with _conn() as c:
-        if status == "all":
-            rows = c.execute(
-                "SELECT id, content, status, updated FROM memory "
-                "WHERE kind='todo' ORDER BY updated DESC"
-            ).fetchall()
-        else:
-            rows = c.execute(
-                "SELECT id, content, status, updated FROM memory "
-                "WHERE kind='todo' AND status=? ORDER BY updated DESC",
-                (status,),
-            ).fetchall()
-    items = [dict(r) for r in rows]
-    return {"ok": True, "count": len(items), "items": items}
+    rows = todo_box._rows("all" if status == "all" else status)
+    return {"ok": True, "count": len(rows), "items": rows,
+            "text": todo_box.listing("all" if status == "all" else status)}
 
 
 def _match_candidates(query: str) -> list:

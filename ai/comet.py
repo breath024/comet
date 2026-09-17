@@ -263,6 +263,13 @@ HELP_TEXT = """COMET 기능 목록
   "기억해 ..." / "뭐 기억하고 있어" — 기억 DB 저장·조회
   "데스크탑 파일 목록" / "README.md 읽어줘" — 파일 탐색·읽기
 
+[할일·일정]  (모델 안 거침 = 즉답)
+  할일 RawCut 납품본 내일 3시까지 — 접수 (프로젝트·마감 자동 인식)
+  할일 / 할일 오늘 / 할일 이번주   — 목록 (프로젝트별, 마감 임박순)
+  일정                            — 시각이 붙은 것만 (약속·미팅)
+  할일 RawCut                     — 그 프로젝트 것만
+  할일 완료 3 [메모] / 할일 완료 납품 / 할일 다시 3 / 할일 전체
+
 [프로젝트 현황 브리핑]
   "브리핑" / "프로젝트 현황" / "Only Money 진행상황" — HANDOFF.md 실시간 읽기
 
@@ -770,6 +777,13 @@ class Comet:
             ans = issue_box.command(t)
             if ans is not None:          # None = "이슈가 뭐야?" 같은 일반 질문 → 대화로 흘림
                 return ans
+        # ── 할일·일정 창구 (프로젝트별로 던져두고 마감·시각으로 되찾기) — todo_box.py ──
+        #   모델 안 거침(= GPU 안 씀, 즉답). "할일이 뭐야?" 같은 일반 질문은 None → 대화로 흘림.
+        if re.match(r"^(할\s*일|투두|todo|일정|스케줄)", t.strip(), re.I):
+            import todo_box
+            ans = todo_box.command(t)
+            if ans is not None:          # 목록 덤프를 대화기록에 안 쌓는다(이슈·알림 명령과 같은 관례)
+                return ans
         # ── 이슈 알림(AI·경제 강도별) — 로직은 autonomy.issues_command / issues.py ──
         if low == "알림" or low.startswith(("알림ai", "알림에이아이", "알림경제", "알림끔", "알림꺼",
                                              "알림지금", "알림점검", "알림테스트", "알림기록",
@@ -1191,6 +1205,13 @@ class Comet:
         if action == "read_holdings" and result is not None and result.get("ok"):
             msg = ("📋 보유 종목(화면에서 읽음):\n" + result["text"]
                    + "\n\n(저장했어 — 이제 종목 분석할 때 이 보유 기준으로 갈아탈지/줄일지 짚어줄게.)")
+            print(f"\nCOMET:\n{msg}")
+            return msg
+
+        # 3-할일) 할일·일정 목록은 todo_box 가 만든 화면 그대로 — LLM 이 옮겨 적으면
+        #   번호·마감(D-2, 오늘 15:00)이 흐트러진다. 숫자는 모델에게 안 맡긴다(유의사항).
+        if action == "list_todos" and result is not None and result.get("text"):
+            msg = result["text"]
             print(f"\nCOMET:\n{msg}")
             return msg
 
