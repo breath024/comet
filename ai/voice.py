@@ -440,47 +440,91 @@ class Ear:
             return ""
         if audio.size < self.sample_rate // 2:   # 0.5초 미만 = 무시
             return ""
+        # 마이크 입력이 작으면(레벨·게인이 내려가 있으면) Whisper 가 문장을 뭉갠다 — 키워서 넣는다.
+        # 배수는 20배까지만: 진짜 무음을 20배 키워 봐야 잡음만 커진다.
+        peak = float(np.abs(audio).max())
+        if 0 < peak < 0.3:
+            gain = min(20.0, 0.3 / peak)
+            audio = audio * gain
+            self.last_stats["gain"] = round(gain, 1)
         result = self._model.transcribe(audio, fp16=getattr(self, "_cuda", False), language="ko",
                                         initial_prompt=STT_PROMPT)
         return result["text"].strip()
 
-    def _record(self, max_seconds=30, silence_thresh=0.015,
-                silence_duration=1.2, min_speech=0.4, stop_fn=None, start_timeout=None) -> np.ndarray:
-        sr            = self.sample_rate
-        chunk         = int(sr * 0.1)
-        max_chunks    = int(max_seconds / 0.1)
-        silence_limit = int(silence_duration / 0.1)
-        speech_min    = int(min_speech / 0.1)
+    # 문턱은 고정값이 아니라 '지금 이 방의 소음' 기준으로 잡는다.
+    #   고정 0.015 는 조용한 방에서 작게 말하면 시작조차 못 하고(말해도 무음 취급),
+    #   시끄러운 방에선 말을 멈춰도 계속 소리가 있어 안 끝났다.
+    NOISE_START = 3.0      # 바닥소음의 이 배를 넘으면 '말 시작'
+    NOISE_STOP  = 2.0      # 이 배 밑으로 내려가면 '조용'  (시작보다 낮게 = 말꼬리를 안 자름)
+    PEAK_STOP   = 0.12     # 또는 지금까지 제일 큰 소리의 12% 밑 (소음이 커도 끝을 알아채게)
+    FLOOR       = 0.0025   # 아무리 조용한 방이어도 이 밑은 소리로 안 본다
+    WARMUP      = 3        # 마이크가 열리는 첫 칸들은 값이 0 에 가깝다 — 소음 추정에서 뺀다
+
+    def _record(self, max_seconds=30, silence_duration=1.2, min_speech=0.4,
+                stop_fn=None, start_timeout=None) -> np.ndarray:
+        """끊김 없는 연속 녹음(InputStream) + 방 소음에 맞춘 자동 종료.
+
+        ★예전엔 0.1초마다 sd.rec 로 스트림을 새로 열었다 — 칸과 칸 사이가 통째로 빠져
+          15초를 받는 데 22.6초가 걸렸다(=말의 1/3 유실, 받아쓴 문장이 깨지던 원인).
+          이제 콜백이 모든 샘플을 큐에 담고, 판정만 0.1초 단위로 본다.
+        """
+        import queue
+        sr    = self.sample_rate
+        chunk = int(sr * 0.1)
+        q = queue.Queue()
 
         print("\n🎙  말해봐 (멈추면 자동 종료)...")
         frames, silent, spoke, started = [], 0, 0, False
+        noise, peak = 0.0, 0.0
+        hist = []                        # 최근 칸들의 크기 — 바닥소음을 계속 다시 잡는다
         self.last_stats = {"started": False, "stopped": False, "max_rms": 0.0, "sec": 0.0}
-        start_chunks = int(start_timeout / 0.1) if start_timeout else None
+        silence_limit = int(silence_duration / 0.1)
+        speech_min    = int(min_speech / 0.1)
+        t_end   = time.time() + max_seconds
+        t_start = time.time() + start_timeout if start_timeout else None
 
-        for n in range(max_chunks):
-            if stop_fn and stop_fn():
-                self.last_stats["stopped"] = True
-                break
-            if start_chunks and not started and n >= start_chunks:
-                break
-            block = sd.rec(chunk, samplerate=sr, channels=1, dtype="float32")
-            sd.wait()
-            block = block.flatten()
-            frames.append(block)
-            rms = float(np.sqrt(np.mean(block ** 2)))
-            self.last_stats["max_rms"] = max(self.last_stats["max_rms"], round(rms, 4))
-
-            if rms > silence_thresh:
-                silent = 0
-                spoke += 1
-                if not started:
-                    started = True
-                    print("🔴 녹음 중...", end="\r")
-            elif started:
-                silent += 1
-                if spoke >= speech_min and silent >= silence_limit:
+        with sd.InputStream(samplerate=sr, channels=1, dtype="float32", blocksize=chunk,
+                            callback=lambda indata, n_, t_, s_: q.put(indata[:, 0].copy())):
+            while time.time() < t_end:
+                if stop_fn and stop_fn():
+                    self.last_stats["stopped"] = True
                     break
+                if t_start and not started and time.time() > t_start:
+                    break
+                try:
+                    block = q.get(timeout=0.5)
+                except queue.Empty:
+                    continue
+                frames.append(block)
+                rms = float(np.sqrt(np.mean(block ** 2)))
+                self.last_stats["max_rms"] = max(self.last_stats["max_rms"], round(rms, 4))
+                peak = max(peak, rms)
+                hist.append(rms)
+                # 바닥소음 = 최근 5초 중 조용한 쪽 20% 지점. 말하는 중에도 숨 쉬는 틈이 여기 잡힌다.
+                # 앞 WARMUP 칸(마이크 여는 중 = 거의 0)은 빼야 문턱이 바닥에 붙지 않는다.
+                usable = hist[self.WARMUP:]
+                if len(usable) >= 5:
+                    noise = float(np.percentile(usable[-50:], 20))
 
-        self.last_stats.update(started=started, sec=round(len(frames) * 0.1, 1))
+                if not started:
+                    # 소음 추정(0.8초)이 서기 전엔 시작 판정을 하지 않는다 —
+                    # 문턱이 바닥에 붙어 잡음에 '시작'이 걸리면 start_timeout 이 풀려 30초를 붙잡는다.
+                    if len(usable) >= 5 and rms > max(self.FLOOR, noise * self.NOISE_START):
+                        started = True
+                        spoke += 1
+                        print("🔴 녹음 중...", end="\r")
+                    continue
+
+                gate = max(self.FLOOR, noise * self.NOISE_STOP, peak * self.PEAK_STOP)
+                if rms > gate:
+                    silent = 0
+                    spoke += 1
+                else:
+                    silent += 1
+                    if spoke >= speech_min and silent >= silence_limit:
+                        break
+
+        self.last_stats.update(started=started, sec=round(len(frames) * 0.1, 1),
+                               noise=round(noise or 0, 4), peak=round(peak, 4))
         print("⏹  인식 중...        ")
         return np.concatenate(frames) if frames else np.zeros(1, dtype=np.float32)
