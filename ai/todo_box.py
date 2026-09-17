@@ -421,9 +421,12 @@ def digest(today=None):
             return []
         out = [title]
         for r in rs:
-            clock = f"{r['due'][11:16]} " if "T" in r["due"] else ""
-            mark = "" if title.startswith("오늘") else f"{_due_label(r['due'], today)} "
-            out.append(f"  {clock or mark}[{r.get('tag') or '기타'}] {r['content']}")
+            if title.startswith("오늘"):
+                # 오늘 블록에선 날짜가 뻔하니 시각만. 시각 없는 건 자리를 비워 세로줄을 맞춘다
+                head = r["due"][11:16] if "T" in r["due"] else "―――"
+            else:
+                head = _due_label(r["due"], today)
+            out.append(f"  {head:<6} [{r.get('tag') or '기타'}] {r['content']}")
         return out
 
     lines = [f"📌 {today.strftime('%m/%d')} 할 일"]
@@ -434,6 +437,49 @@ def digest(today=None):
     if rest:
         lines.append(f"(마감 없는 것 {rest}건 — '할일' 로 전체 보기)")
     return "\n".join(lines)
+
+
+def speech(today=None):
+    """소리로 읊을 문장. 읊을 게 없으면 None.
+
+    digest() 를 그대로 읽히면 안 된다 — `#7`, `D-2`, `📌` 를 또박또박 읽어서 알아듣기 힘들다.
+    사람이 말하듯 바꾼다: "오늘 두 개. 세시에 납품본, 그리고 백테스트."
+    """
+    today = today or date.today()
+    rows = [r for r in _rows("open") if r.get("due")]
+    if not rows:
+        return None
+    rows.sort(key=lambda r: _due_dt(r.get("due")))
+    over = [r for r in rows if _due_dt(r["due"]).date() < today]
+    now_ = [r for r in rows if _due_dt(r["due"]).date() == today]
+    soon = [r for r in rows if today < _due_dt(r["due"]).date() <= today + timedelta(days=7)]
+    if not (over or now_ or soon):
+        return None
+
+    def name(r):
+        t = r["content"]
+        return t if len(t) <= 30 else t[:30] + "…"
+
+    def clock(r):
+        if "T" not in r["due"]:
+            return ""
+        h, m = int(r["due"][11:13]), int(r["due"][14:16])
+        return f"{h}시 {m}분에 " if m else f"{h}시에 "
+
+    parts = []
+    if now_:
+        head = f"오늘 {len(now_)}건이야. " if len(now_) > 1 else "오늘 할 건 "
+        parts.append(head + ", ".join(clock(r) + name(r) for r in now_[:3]) + ".")
+    if over:
+        first = over[0]
+        days = (today - _due_dt(first["due"]).date()).days
+        more = f" 그 외에도 {len(over) - 1}건 밀려 있어." if len(over) > 1 else ""
+        parts.append(f"지난 것도 있어. {name(first)}, {days}일 지났어.{more}")
+    if soon:
+        parts.append(f"이레 안에 {len(soon)}건 더 있고.")
+    if not now_ and not over and soon:
+        parts.insert(0, "오늘 급한 건 없어.")
+    return " ".join(parts)
 
 
 def complete(key, note=""):

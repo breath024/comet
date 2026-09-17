@@ -187,17 +187,46 @@ class BriefMode(_Mode):
             if self.save_fn:
                 self.save_fn()
             return
-        if not notify.configured():
-            self.log("[brief] 텔레그램 미설정 — 할 일 푸시 보류")
-            return
-        res = notify.send(text)
-        if res.get("ok"):
+        sent = False
+        if notify.configured():
+            res = notify.send(text)
+            sent = bool(res.get("ok"))
+            if not sent:
+                self.log(f"[brief] 할 일 전송 실패: {res.get('msg')} — 다음 점검 재시도")
+        else:
+            self.log("[brief] 텔레그램 미설정 — 폰 푸시는 건너뜀")
+
+        # 화면 배너 + 음성 — 호윤이 폰을 안 보고 있어도 듣게. 끄려면 brief.todo_speak=false
+        spoken = self._say_todos(text) if self.cfg.get("todo_speak", True) else False
+
+        if sent or spoken:
             self.cfg["todo_last_date"] = today
             if self.save_fn:
                 self.save_fn()
-            self.log(f"[brief] 할 일 푸시 완료 — {today}")
-        else:
-            self.log(f"[brief] 할 일 전송 실패: {res.get('msg')} — 다음 점검 재시도")
+            self.log(f"[brief] 할 일 알림 완료 — {today} (폰 {'O' if sent else 'X'} / 소리 "
+                     f"{'O' if spoken else 'X'})")
+
+    def _say_todos(self, digest_text):
+        """배너는 issues.popup 을 그대로 쓴다(한 곳에서만 띄우게). 게임 중이면 배너 생략·소리만
+        — issues 알림과 같은 규칙. TTS 는 Edge-TTS(네트워크)라 GPU 를 안 쓴다."""
+        try:
+            import todo_box
+            line = todo_box.speech()
+            if not line:
+                return False
+            busy = False
+            if self.gpu_busy_fn:
+                busy, _ = self.gpu_busy_fn()
+            if not busy:
+                import issues
+                body = "\n".join(digest_text.splitlines()[1:5])
+                issues.popup("COMET · 오늘 할 일", line[:60], body, level=2, sec=10)
+            import voice
+            voice.Mouth().speak(line)
+            return True
+        except Exception as e:
+            self.log(f"[brief] 할 일 음성 실패: {e}")
+            return False
 
     def _run(self):
         import market_brief
