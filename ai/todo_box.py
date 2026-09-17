@@ -340,6 +340,49 @@ def upcoming(days=0, only_timed=False, label=None):
     return "\n".join(lines)
 
 
+def digest(today=None):
+    """아침에 읊어줄 한 덩어리 — 지난 것 · 오늘 · 이레 안 순서.
+
+    모델 안 거친다(GPU 0). 읊을 게 없으면 None 을 돌려준다 — 빈 알림을 매일 보내면
+    알림 자체를 안 보게 되기 때문에, 보낼 것이 있을 때만 보낸다.
+    """
+    today = today or date.today()
+    rows = [r for r in _rows("open") if r.get("due")]
+    if not rows:
+        return None
+    rows.sort(key=lambda r: _due_dt(r.get("due")))
+    over, now_, soon = [], [], []
+    for r in rows:
+        d = _due_dt(r["due"]).date()
+        if d < today:
+            over.append(r)
+        elif d == today:
+            now_.append(r)
+        elif d <= today + timedelta(days=7):
+            soon.append(r)
+    if not (over or now_ or soon):
+        return None
+
+    def block(title, rs):
+        if not rs:
+            return []
+        out = [title]
+        for r in rs:
+            clock = f"{r['due'][11:16]} " if "T" in r["due"] else ""
+            mark = "" if title.startswith("오늘") else f"{_due_label(r['due'], today)} "
+            out.append(f"  {clock or mark}[{r.get('tag') or '기타'}] {r['content']}")
+        return out
+
+    lines = [f"📌 {today.strftime('%m/%d')} 할 일"]
+    lines += block(f"지난 것 {len(over)}", over)
+    lines += block(f"오늘 {len(now_)}", now_)
+    lines += block(f"이레 안 {len(soon)}", soon)
+    rest = len([r for r in _rows("open") if not r.get("due")])
+    if rest:
+        lines.append(f"(마감 없는 것 {rest}건 — '할일' 로 전체 보기)")
+    return "\n".join(lines)
+
+
 def complete(key, note=""):
     """번호(#3) 또는 키워드로 닫는다."""
     with _conn() as c:

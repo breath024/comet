@@ -169,6 +169,36 @@ class BriefMode(_Mode):
         from datetime import datetime
         return datetime.now().strftime("%Y-%m-%d")
 
+    def _push_todos(self, today):
+        """오늘 할 일·마감을 아침에 읊어준다.
+
+        ★증시 브리핑과 한 푸시로 묶지 않는다 — 브리핑은 27b 를 돌려서 게임 중이면 미뤄지고
+        생성이 실패할 수도 있는데, 할 일은 모델이 전혀 필요 없다(DB 읽기뿐). 묶으면 GPU 사정에
+        내 일정이 끌려다닌다. 그래서 게이트 바깥에서 따로, 날짜 잠금도 따로 건다.
+        보낼 게 없는 날은 아예 안 보낸다(빈 알림이 쌓이면 알림을 안 보게 된다).
+        """
+        if self.cfg.get("todo_last_date") == today:
+            return
+        import notify
+        import todo_box
+        text = todo_box.digest()
+        if not text:
+            self.cfg["todo_last_date"] = today       # 오늘은 읊을 게 없음 — 하루 한 번만 확인
+            if self.save_fn:
+                self.save_fn()
+            return
+        if not notify.configured():
+            self.log("[brief] 텔레그램 미설정 — 할 일 푸시 보류")
+            return
+        res = notify.send(text)
+        if res.get("ok"):
+            self.cfg["todo_last_date"] = today
+            if self.save_fn:
+                self.save_fn()
+            self.log(f"[brief] 할 일 푸시 완료 — {today}")
+        else:
+            self.log(f"[brief] 할 일 전송 실패: {res.get('msg')} — 다음 점검 재시도")
+
     def _run(self):
         import market_brief
         import notify
@@ -179,6 +209,8 @@ class BriefMode(_Mode):
         while not self._stop.wait(check):
             try:
                 today = self._today()
+                if datetime.now().hour >= hour:
+                    self._push_todos(today)          # ★ 할 일은 GPU·모델 게이트 밖에서 먼저
                 if self.cfg.get("last_date") == today:
                     continue                         # 오늘 이미 보냄
                 if datetime.now().hour < hour:
