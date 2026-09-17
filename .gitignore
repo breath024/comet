@@ -64,3 +64,4 @@ ai/issues_seen.json
 *.bin
 *.safetensors
 ai/reddit_config.json
+ai/duck_state.json
