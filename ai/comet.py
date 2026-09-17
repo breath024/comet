@@ -877,7 +877,8 @@ class Comet:
         if low.startswith("자율모드") or low.startswith("자율 모드"):
             return self.autonomy.command(low)
         # 의견을 묻는 말 → 클로드+아스트라 회의 (위의 명령들을 다 지나온 뒤에만)
-        if OPINION_ASK.search(low) and not NEWS_ASK.search(low):
+        #   회의가 이미 돌고 있으면 막지 않고 평소처럼 바로 답한다(회의 중에도 대화는 된다)
+        if OPINION_ASK.search(low) and not NEWS_ASK.search(low) and not getattr(self, "_debating", False):
             return self._start_debate(t, text)
         # ── 두뇌 전환: 로컬(ollama) ↔ 클라우드(클로드/GPT/딥시크) (콘솔·폰 공용) ──
         #   최종 답변만 클라우드로. 문지기·도구선택은 로컬 유지(과금 방지). 키 없으면 자동 로컬.
