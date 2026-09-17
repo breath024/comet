@@ -15,9 +15,11 @@
 #
 #  소스 — 전부 무료·키 없음:
 #    뉴스  : 구글뉴스 RSS(news.fetch_keyword 재사용) / Yahoo chart(prices._yahoo 재사용)
-#    AI    : 해커뉴스(hn.algolia.com) / 긱뉴스 1면 / 레딧 RSS / 허깅페이스 트렌딩 / GitHub 릴리즈 / 디시 특이점갤
-#    경제  : 디시 주식·미주·코인갤 개념글 / 클리앙 새소식 / 레딧 RSS
+#    AI    : 해커뉴스(hn.algolia.com) / 긱뉴스 1면 / 블루스카이 검색 / 허깅페이스 트렌딩 / GitHub 릴리즈 / 디시 특이점갤
+#    경제  : 디시 주식·미주·코인갤 개념글 / 클리앙 새소식 / 블루스카이 검색
 #    X(트위터)는 무료 읽기가 없어졌다(2026-02 종량제, 글당 $0.005) — X 에서 터진 건 위 커뮤니티로 옮겨온다.
+#    레딧은 뺐다: 비인증 RSS 는 연달아 부르면 429, 공식 API 는 사전 승인제라 앱 생성이 거부됐다(2026-09-17).
+#      영어권 반응은 블루스카이가 대신한다 — 로그인 없이 api.bsky.app 검색이 열려 있다(public.api.bsky.app 검색은 403).
 #    에펨코리아는 뺐다: 최신순 목록엔 추천수가 거의 없고, 인기순은 레이아웃이 달라 추천수를 못 뽑는다(2026-09-15).
 #
 #  ★커뮤니티 단독은 '볼만함(2)'까지만. 같은 사건이 뉴스에도 잡혀야 '굵직'으로 올린다
@@ -190,29 +192,63 @@ def src_geeknews(cat="ai", topic=AI_TOPIC):
     return out
 
 
-def src_reddit(subs, cat, topic=None):
-    """레딧 RSS(키 없음, 여러 서브 한 번에). 점수가 안 오니 '오늘 상위 순위'로 강도.
-       비인증은 연달아 부르면 429 — 그 회차는 건너뛴다."""
+# 블루스카이 검색은 OR 를 못 받는다(공백=AND, 'A OR B' 는 0건 — 2026-09-17 실측).
+# 그래서 한 바퀴에 분야당 한 단어만 부르고, 바퀴마다 다음 단어로 돌린다.
+BSKY_QUERIES = {
+    "ai":   ["OpenAI", "Anthropic", "Gemini", "Nvidia", "DeepSeek", "LLM"],
+    "econ": ["Federal Reserve", "tariffs", "stock market", "recession", "inflation"],
+}
+_bsky_turn = {"ai": 0, "econ": 0}
+# ★비인증 검색은 몰아 부르면 IP 가 막힌다 — 몇 분 새 ~15회에 "administrative rules" 403, 10분 넘게 안 풀림(2026-09-17).
+#   그래서 분야별 10분에 1번만 부르고, 그 사이 바퀴는 지난 결과를 다시 쓴다(가산점이 끊기지 않게).
+#   403 이면 1시간 쉰다.
+BSKY_GAP = 600
+BSKY_BACKOFF = 3600
+_bsky_cache = {}     # cat → (다음 호출 가능 시각, 지난 결과)
+
+
+def src_bluesky(cat, query=None):
+    """블루스카이 최근 24시간 인기글(키 없음). 좋아요 수로 반응 크기.
+       검색어가 곧 분야 필터라 제목 단어 필터는 안 건다(영어 글이라 ECON_TOPIC 에 안 걸린다).
+       query 를 주면(자가점검) 쉬는 시간을 무시하고 바로 부른다."""
+    import urllib.error
+    if query is not None:
+        return _bsky_search(cat, query)
+    ready, last = _bsky_cache.get(cat, (0, []))
+    if time.time() < ready:
+        return [dict(x) for x in last]
+    qs = BSKY_QUERIES[cat]
+    query = qs[_bsky_turn[cat] % len(qs)]
+    _bsky_turn[cat] += 1
     try:
-        s = _get(f"https://www.reddit.com/r/{'+'.join(subs)}/top/.rss?t=day")
-    except Exception:
-        return []
+        got = _bsky_search(cat, query)
+    except urllib.error.HTTPError as e:
+        _bsky_cache[cat] = (time.time() + (BSKY_BACKOFF if e.code in (403, 429) else BSKY_GAP), [])
+        raise
+    _bsky_cache[cat] = (time.time() + BSKY_GAP, got)
+    return [dict(x) for x in got]
+
+
+def _bsky_search(cat, query):
+    """검색 한 번 → 좋아요 300↑ 글만 잔잔(1)로."""
+    from datetime import timedelta, timezone
+    import urllib.parse
+    since = (datetime.now(timezone.utc) - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    j = json.loads(_get("https://api.bsky.app/xrpc/app.bsky.feed.searchPosts?sort=top&lang=en"
+                        f"&limit=25&since={since}&q=" + urllib.parse.quote(query)))
     out = []
-    for rank, ent in enumerate(s.split("<entry>")[1:], 1):
-        t = re.search(r"<title>(.*?)</title>", ent, re.S)
-        link = re.search(r'<link href="([^"]+)"', ent)
-        sub = re.search(r'<category term="([^"]+)"', ent)
-        if not (t and link):
+    for p in j.get("posts", []):
+        likes = int(p.get("likeCount") or 0)
+        text = (p.get("record") or {}).get("text") or ""
+        title = _strip_tags(text.split(chr(10))[0])[:100]       # 긴 본문은 단어가 많아 아무 뉴스와 엮인다
+        # 레딧과 같은 선: 단독은 잔잔까지. 좋아요가 많아도 의견글·정치글이 많다.
+        # 뉴스와 겹치면 _merge_community 가 뉴스 쪽을 올린다.
+        if likes < 300 or len(title) < 15:
             continue
-        title = _strip_tags(t.group(1))
-        if topic and not topic.search(title):
-            continue
-        # 점수가 안 오는 소스라 단독으론 잔잔까지. 뉴스와 겹치면 _merge_community 가 뉴스 쪽을 올린다.
-        # (볼만함으로 두니 r/singularity 3위 밈글이 올라왔다 — 2026-09-15)
-        lv = 1 if rank <= 10 else 0
-        if lv:
-            out.append(_item(cat, title, lv, f"r/{sub.group(1) if sub else '?'} 오늘 {rank}위",
-                             link.group(1), lang="en"))
+        rkey = p.get("uri", "").rsplit("/", 1)[-1]
+        handle = (p.get("author") or {}).get("handle", "")
+        out.append(_item(cat, title, 1, f"블루스카이 좋아요 {likes:,}",
+                         f"https://bsky.app/profile/{handle}/post/{rkey}", lang="en"))
     return out
 
 
@@ -324,10 +360,14 @@ def src_clien(cat="econ", topic=ECON_TOPIC):
     return out
 
 
+_FAILED = []    # 이번 회차에 조회 실패한 소스 — '반응 없음'이 아니라 '확인 못 함'
+
+
 def _safe(fn, *a, **kw):
     try:
         return fn(*a, **kw)
-    except Exception:
+    except Exception as e:
+        _FAILED.append(f"{fn.__name__}: {str(e)[:40]}")
         return []
 
 
@@ -382,7 +422,7 @@ def collect_ai():
                       "lang": g["items"][0].get("lang", "ko"), "why": f"{n}개 매체 보도",
                       "url": g["items"][0].get("link", ""), "tokens": sorted(g["tokens"])})
     found += _safe(src_geeknews)
-    found += _safe(src_reddit, ["LocalLLaMA", "singularity", "OpenAI", "ClaudeAI"], "ai")
+    found += _safe(src_bluesky, "ai")
     found += _safe(src_hf_trending)
     found += _safe(src_github_releases)
     found += _safe(src_dcinside, "thesingularity", "mgallery/board", "ai", 150, 60, "디시 특이점갤", AI_TOPIC)
@@ -433,8 +473,7 @@ def collect_econ():
     found += _safe(src_dcinside, "stockus", "mgallery/board", "econ", 150, 60, "디시 미주갤", ECON_TOPIC)
     found += _safe(src_dcinside, "bitcoins_new1", "board", "econ", 150, 60, "디시 코인갤", ECON_TOPIC)
     found += _safe(src_clien)
-    time.sleep(2)                       # 레딧 비인증 429 피하기(AI 쪽 호출과 간격)
-    found += _safe(src_reddit, ["wallstreetbets", "stocks", "economics"], "econ")
+    found += _safe(src_bluesky, "econ")
     return _merge_community(found)
 
 
@@ -560,11 +599,14 @@ def check(modes, *, gpu_busy_fn=None, quiet_hours=None, log=print, dry=False, ba
         need = MODE_MIN.get(mode, 99)
         if need > 3 or cat not in COLLECTORS:
             continue
+        del _FAILED[:]
         try:
             found = COLLECTORS[cat]()
         except Exception as e:
             log(f"[이슈] {cat} 수집 실패: {e}")
             continue
+        if _FAILED:
+            log(f"[이슈] {cat} 이번엔 확인 못 한 소스: {' / '.join(_FAILED)}")
         new = _filter_new(found, seen)
         if baseline:
             _mark_seen(new, seen)
@@ -590,7 +632,8 @@ def check(modes, *, gpu_busy_fn=None, quiet_hours=None, log=print, dry=False, ba
 
 SOURCES = {   # 소스별 생존 확인(자가점검용) — 0건이 며칠 이어지면 사이트 구조가 바뀐 것
     "긱뉴스": lambda: src_geeknews(topic=re.compile(".")),
-    "레딧(AI)": lambda: src_reddit(["LocalLLaMA", "singularity", "OpenAI", "ClaudeAI"], "ai"),
+    "블루스카이(AI)": lambda: src_bluesky("ai", "OpenAI"),
+    "블루스카이(경제)": lambda: src_bluesky("econ", "Federal Reserve"),
     "허깅페이스": lambda: json.loads(_get("https://huggingface.co/api/trending?type=model&limit=10"))["recentlyTrending"],
     "GitHub": lambda: [r for r in GH_REPOS if "<entry>" in _get(f"https://github.com/{r}/releases.atom")],
     "디시 특이점갤": lambda: src_dcinside("thesingularity", "mgallery/board", "ai", 1, 0, "특갤"),
