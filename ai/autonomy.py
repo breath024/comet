@@ -448,32 +448,98 @@ class TalkMode(_Mode):
             ctypes.windll.user32.PostThreadMessageW(self._tid, 0x0012, 0, 0)   # WM_QUIT
         return True, "중지 요청"
 
-    def _popup(self, title, body=""):
+    LOG_FILE = os.path.join(_DIR, "talk.log")
+    START_TIMEOUT = 6          # 창 뜨고 이 안에 말도 타이핑도 없으면 닫는다
+
+    def _trace(self, msg):
+        """데몬 창은 내가(클로드가) 못 본다 — 어디서 멈췄는지 파일에도 남긴다."""
+        self.log(f"[talk] {msg}")
         try:
-            import issues
-            issues.popup("COMET", title, body, level=2, sec=4)
+            from datetime import datetime
+            with open(self.LOG_FILE, "a", encoding="utf-8") as f:
+                f.write(f"{datetime.now():%m-%d %H:%M:%S} {msg}\n")
         except Exception:
             pass
+
+    def _preload(self):
+        """Whisper 는 처음 올리는 데 몇 초 — 모드 켤 때 미리 올려둔다."""
+        try:
+            import voice
+            ear = voice.Ear()
+            ear._load()
+            self._ear = ear
+            self._trace("귀 준비 완료")
+        except Exception as e:
+            self._trace(f"귀 준비 실패: {e}")
 
     def _converse(self):
         if not self._busy.acquire(blocking=False):
             return
+        import sys
+        import time
+        import tempfile
+        import subprocess
+        d = tempfile.mkdtemp(prefix="comet_ask_")
+        has = lambda name: os.path.exists(os.path.join(d, name))  # noqa: E731
+
+        def state(stage, text=""):
+            try:
+                tmp = os.path.join(d, "state.json.tmp")
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump({"stage": stage, "text": text}, f, ensure_ascii=False)
+                os.replace(tmp, os.path.join(d, "state.json"))
+            except Exception:
+                pass
+
         try:
-            import voice
+            py = sys.executable.replace("python.exe", "pythonw.exe")
+            if not os.path.exists(py):
+                py = sys.executable
+            subprocess.Popen([py, os.path.join(_DIR, "ask_box.py"), "--dir", d],
+                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            dead = time.time() + 3
+            while time.time() < dead and not has("ready"):
+                time.sleep(0.05)
+
+            # 1) 말 — 타이핑을 시작하거나 창을 닫으면 바로 멈춘다
+            heard = ""
             if self._ear is None:
-                self._ear = voice.Ear()
-            self._popup("듣는 중…", "말이 끝나면 알아서 멈춰")
-            heard = self._ear.listen()
-            if not heard:
-                self._popup("못 들었어")
+                state("loading")
+                self._preload()
+            if self._ear is not None and not (has("typing") or has("closed")):
+                state("listening")
+                heard = self._ear.listen(stop_fn=lambda: has("typing") or has("closed"),
+                                         start_timeout=self.START_TIMEOUT)
+                self._trace(f"듣기 끝 {self._ear.last_stats} → {heard!r}")
+            if has("closed"):
                 return
-            self.log(f"[talk] 들음: {heard}")
+            # 2) 타이핑 — 보낼 때까지(3초 멈춤 / Enter) 기다린다
+            if has("typing"):
+                dead = time.time() + 300
+                while time.time() < dead and not has("typed.txt") and not has("closed"):
+                    time.sleep(0.1)
+                if not has("typed.txt"):
+                    return
+                with open(os.path.join(d, "typed.txt"), encoding="utf-8") as f:
+                    text = f.read().strip()
+                self._trace(f"입력: {text!r}")
+            else:
+                text = heard
+                if not text:
+                    state("none")
+                    return
+                state("heard", text)
+            # 3) 대답 — 글로 보여주고 소리로도
             with self.lock:
-                reply = self.respond_fn(heard, speak=False) or ""
+                reply = self.respond_fn(text, speak=False) or ""
+            self._trace(f"대답 {len(reply)}자")
+            state("reply", reply)
             if reply and self.speak_fn:
                 self.speak_fn(reply)
+            state("done")
         except Exception as e:
-            self.log(f"[talk] 오류: {e}")
+            self._trace(f"오류: {e!r}")
+            state("error", str(e))
         finally:
             self._busy.release()
 
@@ -526,7 +592,9 @@ class TalkMode(_Mode):
             k32.CloseHandle(mutex)
             return
         self._tid = k32.GetCurrentThreadId()
-        self.log("[talk] 가동 — Alt 두 번 누르면 들어")
+        self._trace("가동 — Alt 두 번 누르면 말걸기 창")
+        if self._ear is None:
+            threading.Thread(target=self._preload, name="talk-preload", daemon=True).start()
         try:
             msg = wintypes.MSG()
             while not self._stop.is_set() and u32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:

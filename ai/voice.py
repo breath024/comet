@@ -277,6 +277,7 @@ class Ear:
         self.model_name  = model
         self.sample_rate = sample_rate
         self._model      = None
+        self.last_stats  = {}
 
     def _load(self):
         if self._model is None:
@@ -285,16 +286,20 @@ class Ear:
             self._model = whisper.load_model(self.model_name)
             print("  [STT] 준비 완료")
 
-    def listen(self) -> str:
+    def listen(self, stop_fn=None, start_timeout=None) -> str:
+        """stop_fn() 이 참이 되면 바로 멈추고 "" (말걸기 창에서 타이핑을 시작했을 때).
+        start_timeout 초 안에 말이 시작 안 되면 "" — 30초 내내 붙잡고 있지 않게."""
         self._load()
-        audio = self._record()
+        audio = self._record(stop_fn=stop_fn, start_timeout=start_timeout)
+        if self.last_stats.get("stopped") or not self.last_stats.get("started"):
+            return ""
         if audio.size < self.sample_rate // 2:   # 0.5초 미만 = 무시
             return ""
         result = self._model.transcribe(audio, fp16=False, language="ko")
         return result["text"].strip()
 
     def _record(self, max_seconds=30, silence_thresh=0.015,
-                silence_duration=1.2, min_speech=0.4) -> np.ndarray:
+                silence_duration=1.2, min_speech=0.4, stop_fn=None, start_timeout=None) -> np.ndarray:
         sr            = self.sample_rate
         chunk         = int(sr * 0.1)
         max_chunks    = int(max_seconds / 0.1)
@@ -303,13 +308,21 @@ class Ear:
 
         print("\n🎙  말해봐 (멈추면 자동 종료)...")
         frames, silent, spoke, started = [], 0, 0, False
+        self.last_stats = {"started": False, "stopped": False, "max_rms": 0.0, "sec": 0.0}
+        start_chunks = int(start_timeout / 0.1) if start_timeout else None
 
-        for _ in range(max_chunks):
+        for n in range(max_chunks):
+            if stop_fn and stop_fn():
+                self.last_stats["stopped"] = True
+                break
+            if start_chunks and not started and n >= start_chunks:
+                break
             block = sd.rec(chunk, samplerate=sr, channels=1, dtype="float32")
             sd.wait()
             block = block.flatten()
             frames.append(block)
             rms = float(np.sqrt(np.mean(block ** 2)))
+            self.last_stats["max_rms"] = max(self.last_stats["max_rms"], round(rms, 4))
 
             if rms > silence_thresh:
                 silent = 0
@@ -322,5 +335,6 @@ class Ear:
                 if spoke >= speech_min and silent >= silence_limit:
                     break
 
+        self.last_stats.update(started=started, sec=round(len(frames) * 0.1, 1))
         print("⏹  인식 중...        ")
         return np.concatenate(frames) if frames else np.zeros(1, dtype=np.float32)
