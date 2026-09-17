@@ -38,6 +38,7 @@ TOKEN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "daemon_to
 _comet = comet.Comet()
 _comet.auto_approve = True        # 데몬(폰)은 input() 불가 → 자동승인. 콘솔은 False(기본).
 _lock = threading.Lock()          # 단일 사용자 — 요청 직렬화로 history 보호
+_comet.autonomy.modes["talk"].lock = _lock   # Alt 두 번 말걸기도 폰 요청과 같은 줄에 선다
 
 
 # ── 접속 토큰: 없으면 생성, 있으면 로드 (이 파일은 공유 금지) ──

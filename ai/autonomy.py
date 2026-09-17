@@ -31,6 +31,8 @@ DEFAULTS = {
     #   modes 값 = 끔 | 굵직 | 보통 | 전부.  quiet = [시작시, 끝시] 이 시간엔 소리 없이 배너만(없으면 [])
     "issues":    {"enabled": False, "interval_sec": 120,
                   "modes": {"ai": "굵직", "econ": "굵직"}, "quiet": []},
+    # talk: Alt 두 번 → 말 걸기. gap = 두 번 사이 최대 간격(초)
+    "talk":      {"enabled": True, "gap": 0.45},
 }
 
 
@@ -374,6 +376,170 @@ class WakeMode(_Mode):
 
 
 # ═══════════════════════════════════════════════════════════════
+#  talk — Alt 두 번 톡톡 → 듣기 → 답하고 소리내기 (맥의 받아쓰기 단축키처럼)
+#   키 라이브러리 설치 없이 윈도우 저수준 키보드 훅(ctypes)으로 잡는다. 키를 막지는 않는다(보기만).
+#   ★Alt+Tab 같은 조합은 무시 — Alt 가 눌린 사이 다른 키가 끼면 톡이 아니다.
+#   ★오른쪽 Alt 는 한글 키보드에선 한/영 키라 안 올 수 있다 — 왼쪽 Alt 기준.
+#   ★콘솔(run.bat)과 데몬이 같이 떠도 한쪽만 잡게 이름 있는 뮤텍스로 막는다(두 번 대답 방지).
+# ═══════════════════════════════════════════════════════════════
+class DoubleTap:
+    """키 이벤트를 넣으면 'Alt 두 번'인지 판정한다(훅과 분리 — 테스트하려고)."""
+    ALTS = (0xA4, 0xA5, 0x12)          # VK_LMENU, VK_RMENU, VK_MENU
+
+    def __init__(self, gap=0.45, hold=0.35):
+        self.gap, self.hold = gap, hold
+        self.down_at = None             # Alt 누른 시각(떼기 전)
+        self.dirty = False              # Alt 누른 사이 다른 키가 끼었나
+        self.last_tap = None
+
+    def feed(self, vk, down, t):
+        if vk not in self.ALTS:
+            if down:
+                self.dirty = True       # Alt+Tab 등
+                self.last_tap = None
+            return False
+        if down:
+            if self.down_at is None:    # 누르고 있으면 자동반복으로 down 이 계속 온다
+                self.down_at, self.dirty = t, False
+            return False
+        if self.down_at is None:
+            return False
+        tap = not self.dirty and (t - self.down_at) <= self.hold
+        self.down_at = None
+        if not tap:
+            self.last_tap = None
+            return False
+        if self.last_tap is not None and t - self.last_tap <= self.gap:
+            self.last_tap = None
+            return True
+        self.last_tap = t
+        return False
+
+
+class TalkMode(_Mode):
+    name = "talk"
+    desc = "Alt 두 번 → 말 걸기 (듣고 답하고 소리로)"
+    MUTEX = "Local\\COMET_TALK_HOTKEY"
+
+    def __init__(self, cfg, log, respond_fn=None, speak_fn=None):
+        super().__init__(cfg, log)
+        self.respond_fn = respond_fn
+        self.speak_fn = speak_fn
+        self.lock = threading.Lock()   # 데몬이 자기 요청 락으로 갈아끼운다(대화기록 동시쓰기 방지)
+        self._busy = threading.Lock()  # 듣는 중에 또 톡톡 → 무시
+        self._tid = None
+        self._ear = None
+
+    def available(self):
+        if os.name != "nt":
+            return False, "윈도우 전용"
+        if self.respond_fn is None:
+            return False, "응답 연결(respond_fn)이 없음"
+        try:
+            import sounddevice  # noqa: F401
+        except Exception:
+            return False, "마이크 라이브러리(sounddevice) 없음"
+        return True, ""
+
+    def stop(self):
+        self._stop.set()
+        if self._tid:
+            import ctypes
+            ctypes.windll.user32.PostThreadMessageW(self._tid, 0x0012, 0, 0)   # WM_QUIT
+        return True, "중지 요청"
+
+    def _popup(self, title, body=""):
+        try:
+            import issues
+            issues.popup("COMET", title, body, level=2, sec=4)
+        except Exception:
+            pass
+
+    def _converse(self):
+        if not self._busy.acquire(blocking=False):
+            return
+        try:
+            import voice
+            if self._ear is None:
+                self._ear = voice.Ear()
+            self._popup("듣는 중…", "말이 끝나면 알아서 멈춰")
+            heard = self._ear.listen()
+            if not heard:
+                self._popup("못 들었어")
+                return
+            self.log(f"[talk] 들음: {heard}")
+            with self.lock:
+                reply = self.respond_fn(heard, speak=False) or ""
+            if reply and self.speak_fn:
+                self.speak_fn(reply)
+        except Exception as e:
+            self.log(f"[talk] 오류: {e}")
+        finally:
+            self._busy.release()
+
+    def _run(self):
+        import time
+        import ctypes
+        from ctypes import wintypes
+        k32, u32 = ctypes.windll.kernel32, ctypes.windll.user32
+        k32.CreateMutexW.restype = wintypes.HANDLE
+        mutex = k32.CreateMutexW(None, False, self.MUTEX)
+        if ctypes.GetLastError() == 183:                  # ERROR_ALREADY_EXISTS
+            self.log("[talk] 다른 COMET 이 이미 Alt 두 번을 잡고 있음 — 여기선 안 잡음")
+            k32.CloseHandle(mutex)
+            return
+
+        LRESULT = ctypes.c_ssize_t
+
+        class KBD(ctypes.Structure):
+            _fields_ = [("vkCode", wintypes.DWORD), ("scanCode", wintypes.DWORD),
+                        ("flags", wintypes.DWORD), ("time", wintypes.DWORD),
+                        ("dwExtraInfo", ctypes.c_size_t)]
+
+        PROC = ctypes.WINFUNCTYPE(LRESULT, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
+        u32.SetWindowsHookExW.restype = wintypes.HHOOK
+        u32.SetWindowsHookExW.argtypes = (ctypes.c_int, PROC, wintypes.HINSTANCE, wintypes.DWORD)
+        u32.CallNextHookEx.restype = LRESULT
+        u32.CallNextHookEx.argtypes = (wintypes.HHOOK, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
+        u32.UnhookWindowsHookEx.argtypes = (wintypes.HHOOK,)
+
+        det = DoubleTap(gap=float(self.cfg.get("gap", 0.45)))
+        hook = None
+
+        def on_key(code, wparam, lparam):
+            try:
+                if code == 0:
+                    kb = ctypes.cast(lparam, ctypes.POINTER(KBD)).contents
+                    if not kb.flags & 0x10:                  # 프로그램이 흉내 낸 키(LLKHF_INJECTED)는 무시
+                        down = wparam in (0x100, 0x104)      # WM_KEYDOWN / WM_SYSKEYDOWN
+                        if det.feed(kb.vkCode, down, time.monotonic()):
+                            threading.Thread(target=self._converse, name="talk-once",
+                                             daemon=True).start()
+            except Exception:
+                pass
+            return u32.CallNextHookEx(hook, code, wparam, lparam)
+
+        proc = PROC(on_key)            # 참조를 쥐고 있어야 GC 가 콜백을 안 치운다
+        hook = u32.SetWindowsHookExW(13, proc, None, 0)     # WH_KEYBOARD_LL
+        if not hook:
+            self.log(f"[talk] 키보드 훅 실패 (오류 {ctypes.GetLastError()})")
+            k32.CloseHandle(mutex)
+            return
+        self._tid = k32.GetCurrentThreadId()
+        self.log("[talk] 가동 — Alt 두 번 누르면 들어")
+        try:
+            msg = wintypes.MSG()
+            while not self._stop.is_set() and u32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+                u32.TranslateMessage(ctypes.byref(msg))
+                u32.DispatchMessageW(ctypes.byref(msg))
+        finally:
+            u32.UnhookWindowsHookEx(hook)
+            k32.CloseHandle(mutex)
+            self._tid = None
+            self.log("[talk] 멈춤")
+
+
+# ═══════════════════════════════════════════════════════════════
 #  컨트롤러 — comet 이 토글/상태만 호출
 # ═══════════════════════════════════════════════════════════════
 class Autonomy:
@@ -388,6 +554,8 @@ class Autonomy:
             "wake":      WakeMode(self.cfg["wake"], self.log,
                                   respond_fn=respond_fn, speak_fn=speak_fn),
             "issues":    IssuesMode(self.cfg["issues"], self.log, gpu_busy_fn=gpu_busy_fn),
+            "talk":      TalkMode(self.cfg["talk"], self.log,
+                                  respond_fn=respond_fn, speak_fn=speak_fn),
         }
 
     # 저장된 enabled 모드 복원(데몬/콘솔 시작 시 호출)
@@ -544,7 +712,7 @@ class Autonomy:
                     return self.disable(name)
                 return f"{name}: '켜' 또는 '꺼'로 (예: 자율모드 {name} 켜)"
         return ("자율모드 사용법: '자율모드'(상태) · '자율모드 proactive 켜/꺼' · "
-                "'자율모드 brief 켜/꺼' · '자율모드 wake 켜/꺼'")
+                "'자율모드 brief 켜/꺼' · '자율모드 wake 켜/꺼' · '자율모드 talk 켜/꺼'(Alt 두 번 말걸기)")
 
 
 if __name__ == "__main__":
