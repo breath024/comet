@@ -291,8 +291,10 @@ HELP_TEXT = """COMET 기능 목록
   코딩 @C:\\경로 <할 일>         — 지정 폴더에서 작업
   코딩 /code|/debug|/study ...  — 스킬 지정
 
-[회의 (멀티에이전트)]
-  회의 <주제> — 역할별 에이전트 토론→합성 (몇 분 걸림)
+[회의 (클로드 + 아스트라)]
+  회의 <주제> — 둘이 각자 입장 → 서로 반박 → 결론 (1~3분, 끝나면 배너+음성)
+  "어떻게 생각해 / 뭐가 나아 / ~해야 할까" 같은 의견 질문도 자동으로 회의
+  회의 결과 — 지난 회의 전문 · 로컬 회의 <주제> — 로컬 모델끼리 (몇 분)
 
 [화면·이미지]
   화면 봐줘 / 이 이미지 뭐야 — gemma4 vision (vision.py)
@@ -351,6 +353,10 @@ NEWS_ASK = re.compile(
     r"(뉴스|소식)(가|는|들|거리|좀)*(뭐|없|있|알려|보여|말해|들려|읽어|정리|줘|어때)"
     r"|(새로운|새|요즘|오늘|최근|최신|한국|국내|해외|외국|미국|경제|ai)(뉴스|소식)")
 NEWS_SEARCH = re.compile(r"검색|찾아|에대한|에대해|관련")
+# 의견을 묻는 말 (공백 뺀 소문자) — 클로드+아스트라 회의로 보낸다
+OPINION_ASK = re.compile(
+    r"어떻게생각|네생각|너는생각|의견(줘|좀|은|을|어때|있)|조언(해|좀|줘)|판단해|"
+    r"(뭐|어느|어떤)(게|가|것이|쪽이?)(나아|낫|좋을|맞)|하는게(맞|나을|낫|좋을)|야(할까|하나|되나|돼\?)")
 
 BRIEF_KW = ("브리핑", "브리핑해", "현황", "진행중", "진행 중", "어디까지", "근황",
             "상태 어때", "어떻게 돼", "어떻게 되", "진척", "요약해줘", "정리해줘",
@@ -660,6 +666,45 @@ class Comet:
             gpu_busy_fn=_gpu_busy)   # brief 모드가 게임 중이면 무거운 브리핑을 미루도록
         self.autonomy.restore()
 
+    # ── 회의(클로드+아스트라)를 뒤에서 돌리고, 끝나면 배너+음성+대화기록 ──
+    def _start_debate(self, topic, text):
+        if getattr(self, "_debating", False):
+            return "지금 회의 하나 돌고 있어. 끝나면 말해줄게 (전문: 회의 결과)."
+        self._debating = True
+        ctx = "\n".join(f"{m['role']}: {str(m['content'])[:300]}" for m in self.history.recent()[-4:])
+        self.history.add("user", text)
+        self.history.save()
+
+        def run():
+            import debate
+            import issues
+            try:
+                res = debate.debate(topic, context=ctx)
+                if res.get("ok"):
+                    full = debate.format_full(res)
+                    head = res["result"].splitlines()[0].replace("결론:", "").strip()
+                    issues.popup("COMET · 회의 (" + " + ".join(res["who"]) + ")", head[:80],
+                                 "전문: '회의 결과'", level=2, sec=12)
+                    self.history.add("assistant", full)
+                    self.history.save()
+                    say = res.get("speech") or head
+                else:
+                    say = "회의가 안 됐어. " + res.get("msg", "")
+                    self.history.add("assistant", say)
+                    self.history.save()
+                try:
+                    self._get_mouth().speak("회의 끝났어. " + say)
+                except Exception as e:
+                    print(f"  [회의 음성 오류] {e}")
+            except Exception as e:
+                print(f"  [회의 오류] {e}")
+            finally:
+                self._debating = False
+
+        import threading
+        threading.Thread(target=run, name="debate", daemon=True).start()
+        return "클로드랑 아스트라한테 회의 붙였어. 1~3분 뒤에 결론 말해줄게 (전문: 회의 결과)."
+
     # ── 음성 모듈 lazy 로딩 (안 쓰면 whisper/torch 안 불러옴) ──
     def _get_mouth(self):
         if self._mouth is None:
@@ -721,10 +766,21 @@ class Comet:
 
         # ── 회의(council): 일반 주제를 여러 에이전트가 분석→초안→반론↔보강→합성 ──
         #    (코딩은 '코딩 회의 …'. 여긴 전략·판단 등 일반. 순차라 몇 분 걸림.)
+        # ── 회의(클로드 + 아스트라) — 각자 입장 → 서로 반박 → 결론. 뒤에서 돌고 끝나면 배너+음성 ──
+        #    의견을 묻는 말("어떻게 생각해", "뭐가 나아")도 여기로. 옛 로컬 회의는 '로컬 회의 …'.
+        if t.replace(" ", "") in ("회의결과", "회의결론", "지난회의"):
+            import debate
+            return debate.format_full(debate.last())
         if t.startswith("회의 ") or t == "회의":
             topic = t[2:].strip()
             if not topic:
-                return "회의 <주제> — 여러 에이전트가 분석→초안→반론→합성으로 따져줘(몇 분 걸려). 코딩은 '코딩 회의 …'."
+                return ("회의 <주제> — 클로드랑 아스트라가 각자 입장 → 서로 반박 → 결론 (1~3분, 끝나면 말해줌). "
+                        "전문은 '회의 결과'. 로컬 모델로는 '로컬 회의 …', 코딩은 '코딩 회의 …'.")
+            return self._start_debate(topic, text)
+        if t.startswith("로컬 회의 ") or t.startswith("로컬회의 "):
+            topic = t.split("회의", 1)[1].strip()
+            if not topic:
+                return "로컬 회의 <주제> — 로컬 에이전트들이 분석→초안→반론→합성(몇 분 걸려)."
             self.history.add("user", text)
             import council
             _lines = ["🧠 회의 (일반)"]
@@ -820,6 +876,9 @@ class Comet:
         # ── 자율/상주 모드 토글 (콘솔·폰 공용) ──
         if low.startswith("자율모드") or low.startswith("자율 모드"):
             return self.autonomy.command(low)
+        # 의견을 묻는 말 → 클로드+아스트라 회의 (위의 명령들을 다 지나온 뒤에만)
+        if OPINION_ASK.search(low) and not NEWS_ASK.search(low):
+            return self._start_debate(t, text)
         # ── 두뇌 전환: 로컬(ollama) ↔ 클라우드(클로드/GPT/딥시크) (콘솔·폰 공용) ──
         #   최종 답변만 클라우드로. 문지기·도구선택은 로컬 유지(과금 방지). 키 없으면 자동 로컬.
         if low in ("두뇌", "두뇌상태", "브레인"):
