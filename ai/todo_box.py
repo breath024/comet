@@ -26,6 +26,7 @@ from datetime import datetime, date, timedelta
 import memory_db
 
 _DIR = os.path.dirname(os.path.abspath(__file__))
+EXPORT = os.path.join(_DIR, "TODO.md")
 
 # ── 프로젝트 추정 — 앞에서부터 먼저 걸리는 것 ──────────────────────────────
 #   호윤이 실제로 돌리는 것들. 새 프로젝트가 생기면 여기 한 줄.
@@ -222,6 +223,7 @@ def add(content, tag=None, due=None):
         cur = c.execute("INSERT INTO memory(kind, content, status, created, updated, tag, due) "
                         "VALUES('todo', ?, 'open', ?, ?, ?, ?)", (body, now, now, tag, due))
         tid = cur.lastrowid
+    export()
     return {"ok": True, "id": tid, "due": due, "tag": tag,
             "msg": f"할일 #{tid} 접수 [{tag}] {_due_label(due)} — {body}".replace("  ", " ")}
 
@@ -340,6 +342,57 @@ def upcoming(days=0, only_timed=False, label=None):
     return "\n".join(lines)
 
 
+def export():
+    """할일이 바뀔 때마다 `TODO.md` 로 내보낸다 — issue_box 가 ISSUES.md 를 뽑는 것과 같은 이유.
+
+    클로드가 호윤 프로젝트를 손대기 전에 '지금 뭘 밀고 있는지'를 파일로 바로 보게 하는 용도.
+    DB(sqlite)는 열어봐야 알지만 이건 폴더에 놓여 있다.
+    ⚠️개인 일감이 그대로 적히는 파일이다 — 공개 저장소에 올리지 말 것(.gitignore 에 넣어둠).
+    """
+    try:
+        today = date.today()
+        rows = _rows("all")
+        opened = sorted([r for r in rows if r["status"] == "open"],
+                        key=lambda r: _due_dt(r.get("due")))
+        closed = sorted([r for r in rows if r["status"] != "open"],
+                        key=lambda r: r["updated"], reverse=True)[:30]
+        urgent = [r for r in opened
+                  if r.get("due") and _due_dt(r["due"]).date() <= today + timedelta(days=7)]
+
+        out = ["# COMET 할일",
+               "",
+               "> 자동 생성 — `todo_box.py` 가 할일이 바뀔 때마다 덮어쓴다. 직접 고치지 말 것.",
+               "> 호윤이 COMET 에 `할일 …` 로 던져둔 것. **프로젝트 손대기 전에 여기부터 보면",
+               "> 지금 뭘 밀고 있는지 안다.**",
+               "> 넣기: `할일 RawCut 납품본 내일 3시까지` · 닫기: `할일 완료 번호 [메모]`",
+               ""]
+        out += [f"## 급한 것 ({len(urgent)})", ""]
+        out += [f"- **#{r['id']}** [{r.get('tag') or '기타'}] {r['content']} "
+                f"— {_due_label(r.get('due'), today)}" for r in urgent] or ["- 없음"]
+
+        out += ["", f"## 열린 것 ({len(opened)})", ""]
+        if opened:
+            groups = {}
+            for r in opened:
+                groups.setdefault(r.get("tag") or "기타", []).append(r)
+            for g in sorted(groups, key=lambda g: _due_dt(groups[g][0].get("due"))):
+                out.append(f"### {g}")
+                out += [f"- #{r['id']} {r['content']}  _{_due_label(r.get('due'), today)}_"
+                        for r in groups[g]]
+                out.append("")
+        else:
+            out += ["- 없음", ""]
+
+        out += [f"## 최근 닫힌 것 ({len(closed)})", ""]
+        out += [f"- ~~#{r['id']}~~ [{r.get('tag') or '기타'}] {r['content']}  "
+                f"_(닫음 {r['updated'][:10]})_" for r in closed] or ["- 없음"]
+
+        with open(EXPORT, "w", encoding="utf-8") as f:
+            f.write("\n".join(out) + "\n")
+    except Exception:
+        pass                                        # 내보내기 실패가 할일 기능을 막지 않게
+
+
 def digest(today=None):
     """아침에 읊어줄 한 덩어리 — 지난 것 · 오늘 · 이레 안 순서.
 
@@ -407,6 +460,7 @@ def complete(key, note=""):
         content = row["content"] + (f"  → {note.strip()}" if note.strip() else "")
         c.execute("UPDATE memory SET status='done', content=?, updated=? WHERE id=?",
                   (content, _now(), row["id"]))
+    export()
     return {"ok": True, "id": row["id"], "msg": f"#{row['id']} 완료 — {content}"}
 
 
@@ -414,6 +468,7 @@ def reopen(iid):
     with _conn() as c:
         n = c.execute("UPDATE memory SET status='open', updated=? WHERE kind='todo' AND id=? "
                       "AND status!='open'", (_now(), iid)).rowcount
+    export()
     return {"ok": bool(n), "msg": f"#{iid} 다시 열었어." if n else f"#{iid} 는 없거나 이미 열려 있어."}
 
 
