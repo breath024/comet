@@ -421,10 +421,11 @@ class TalkMode(_Mode):
     desc = "Alt 두 번 → 말 걸기 (듣고 답하고 소리로)"
     MUTEX = "Local\\COMET_TALK_HOTKEY"
 
-    def __init__(self, cfg, log, respond_fn=None, speak_fn=None):
+    def __init__(self, cfg, log, respond_fn=None, speak_fn=None, cancel_fn=None):
         super().__init__(cfg, log)
-        self.respond_fn = respond_fn
+        self.respond_fn = respond_fn      # respond(text) -> reply, Esc 로 끊겼으면 None
         self.speak_fn = speak_fn
+        self.cancel_fn = cancel_fn        # 생성 중단 신호
         self.lock = threading.Lock()   # 데몬이 자기 요청 락으로 갈아끼운다(대화기록 동시쓰기 방지)
         self._busy = threading.Lock()  # 듣는 중에 또 톡톡 → 무시
         self._tid = None
@@ -536,16 +537,40 @@ class TalkMode(_Mode):
                     state("none")
                     return
                 state("heard", text)
-            # 3) 대답 — 글로 보여주고 소리로도
+            # 3) 대답 — 글로 보여주고 소리로도. 그동안 창에서 Esc(=closed) 오면 생성·음성을 끊는다
             import issues
             asked_at = time.time()
-            with self.lock:
-                reply = self.respond_fn(text, speak=False) or ""
-            self._trace(f"대답 {len(reply)}자")
-            state("reply", reply)
-            if reply and self.speak_fn and issues._last_say < asked_at:   # '뉴스'처럼 이미 읽었으면 또 안 읽음
-                self.speak_fn(reply)
-            state("done")
+            live = {"gen": False, "end": False}
+
+            def watch_esc():
+                while not live["end"]:
+                    if has("closed"):
+                        if live["gen"] and self.cancel_fn:
+                            self.cancel_fn()
+                        voice.stop_speaking()
+                        return
+                    time.sleep(0.1)
+            threading.Thread(target=watch_esc, name="talk-esc", daemon=True).start()
+            try:
+                with self.lock:
+                    if has("closed"):
+                        reply = None
+                    else:
+                        live["gen"] = True    # 락을 쥔 뒤에만 — 폰 요청 생성은 안 끊게
+                        try:
+                            reply = self.respond_fn(text)
+                        finally:
+                            live["gen"] = False
+                if reply is None or has("closed"):
+                    self._trace("Esc — 취소함")
+                    return
+                self._trace(f"대답 {len(reply)}자")
+                state("reply", reply)
+                if reply and self.speak_fn and issues._last_say < asked_at:   # '뉴스'처럼 이미 읽었으면 또 안 읽음
+                    self.speak_fn(reply)
+                state("done")
+            finally:
+                live["end"] = True
         except Exception as e:
             self._trace(f"오류: {e!r}")
             state("error", str(e))
@@ -622,7 +647,8 @@ class TalkMode(_Mode):
 #  컨트롤러 — comet 이 토글/상태만 호출
 # ═══════════════════════════════════════════════════════════════
 class Autonomy:
-    def __init__(self, respond_fn=None, speak_fn=None, log=None, gpu_busy_fn=None):
+    def __init__(self, respond_fn=None, speak_fn=None, log=None, gpu_busy_fn=None,
+                 talk_respond_fn=None, cancel_fn=None):
         self.log = log or (lambda *_: None)
         self.cfg = _load_cfg()
         self.modes = {
@@ -634,7 +660,8 @@ class Autonomy:
                                   respond_fn=respond_fn, speak_fn=speak_fn),
             "issues":    IssuesMode(self.cfg["issues"], self.log, gpu_busy_fn=gpu_busy_fn),
             "talk":      TalkMode(self.cfg["talk"], self.log,
-                                  respond_fn=respond_fn, speak_fn=speak_fn),
+                                  respond_fn=talk_respond_fn or (lambda t: respond_fn(t, speak=False)),
+                                  speak_fn=speak_fn, cancel_fn=cancel_fn),
         }
 
     # 저장된 enabled 모드 복원(데몬/콘솔 시작 시 호출)

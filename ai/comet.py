@@ -116,6 +116,8 @@ def _resolve(model):
 #  그래서 _gen 기본값을 think=False 로 둔다. 사고가 필요한 자리만 think=True 로 켜고,
 #  그때는 num_predict 를 사고 몫까지 올려 잡아라(4096+). think=None 이면 인자 자체를 안 붙인다.
 _NO_THINK = set()      # think 인자를 거부하는 모델 — 한 번 겪으면 그 뒤로 안 붙인다
+import threading
+CANCEL = threading.Event()   # 말걸기 창 Esc — 켜지면 생성 스트림을 그 자리에서 끊는다
 
 
 def _chat_call(kw):
@@ -539,6 +541,8 @@ def _stream_filtered(model, messages, cfg, temperature=None):
     chunks, thought = [], 0
     for part in _gen(model, messages, stream=True, keep_alive=cfg["keep_alive"],
                      temperature=temperature, allow_cloud=True):
+        if CANCEL.is_set():
+            break                     # 스트림을 놓으면 연결이 닫혀 ollama 도 생성을 멈춘다
         msg = part.get("message", {}) or {}
         tok = msg.get("content", "")
         if tok:
@@ -661,6 +665,8 @@ class Comet:
         import autonomy
         self.autonomy = autonomy.Autonomy(
             respond_fn=self.respond,
+            talk_respond_fn=self.respond_cancelable,
+            cancel_fn=CANCEL.set,
             speak_fn=lambda t: self._get_mouth().speak(t),
             log=print,
             gpu_busy_fn=_gpu_busy)   # brief 모드가 게임 중이면 무거운 브리핑을 미루도록
@@ -732,6 +738,24 @@ class Comet:
                 return tier, reason, None
             return "light", f"{reason} · 게임모드(자동:{info})→light", GAME_KEEP_ALIVE
         return "light", f"{reason} · 게임모드 ON→light", GAME_KEEP_ALIVE   # mode == "on"
+
+    def respond_cancelable(self, text):
+        """말걸기 창용 — 도중에 Esc(CANCEL)가 오면 이 턴을 대화기록에서 지우고 None."""
+        n = len(self.history.msgs)
+        CANCEL.clear()
+        try:
+            reply = self.respond(text, speak=False)
+        finally:
+            cancelled = CANCEL.is_set()
+            CANCEL.clear()
+        if cancelled:
+            del self.history.msgs[n:]
+            try:
+                self.history.save()
+            except Exception:
+                pass
+            return None
+        return reply
 
     def respond(self, text, speak=None):
         # ── 도움말 ──────────────────────────────────────────────────────────────

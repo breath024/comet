@@ -13,6 +13,7 @@ import asyncio
 import subprocess
 import tempfile
 import time
+import threading
 import numpy as np
 import sounddevice as sd
 import soundfile as sf
@@ -348,6 +349,17 @@ def synth_ayaka(text: str, timeout: float = 30.0):
         return None
 
 
+_hush = threading.Event()      # 말걸기 창 Esc — 읽는 중이면 끊고, 합성 중이면 안 읽는다
+
+
+def stop_speaking():
+    _hush.set()
+    try:
+        sd.stop()
+    except Exception:
+        pass
+
+
 class Mouth:
     def __init__(self, voice: str = TTS_VOICE, rate: str = TTS_RATE, gain: float = TTS_GAIN):
         self.voice = voice
@@ -360,6 +372,7 @@ class Mouth:
         clean = clean_for_speech(text)
         if not clean:
             return
+        _hush.clear()
         try:
             asyncio.run(self._speak(clean))
         except Exception as e:
@@ -378,6 +391,8 @@ class Mouth:
                 await edge_tts.Communicate(text, voice=self.voice, rate=self.rate).save(path)
                 data, sr = sf.read(path)
                 data = data * self.gain          # 음량 조절
+            if _hush.is_set():
+                return
             ducker.on()                      # 다른 앱 소리 낮추고
             try:
                 if SHOW_ORB:

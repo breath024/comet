@@ -4,7 +4,9 @@
 #
 #  말로 해도 되고, 그냥 타이핑해도 된다.
 #   · 키를 누르는 순간 마이크는 멈추고 입력 모드 (dir/typing 파일로 알림)
-#   · 타이핑을 멈추고 3초 지나면 알아서 보낸다. Enter 는 바로. Esc 는 닫기.
+#   · 타이핑을 멈추고 3초 지나면 알아서 보낸다. Enter 는 바로.
+#   · Esc 는 언제든 취소 — 보내기 전이면 안 보내고, 생각 중이면 생성을 끊고
+#     (대화기록에서도 지움), 읽는 중이면 목소리를 멈춘다. 신호는 dir/closed 파일.
 #   · 진행 상황은 데몬이 dir/state.json 에 쓰고, 이 창은 그걸 읽어서 보여준다
 #     (toast.py·orb.py 와 같은 '파일로 주고받기' — 데몬 스레드에서 tkinter 를 안 돌리려고)
 #
@@ -77,7 +79,7 @@ def main(d):
         cv.create_text(40, 25, text="COMET", fill=SUB, font=f_tag, anchor="w")
         cv.create_text(W - 22, 25, text=status, fill=SUB, font=f_tag, anchor="e")
         _round_rect(cv, 18, 46, W - 18, 88, 14, fill="#2c2c2e", outline="")
-        cv.create_text(W - 22, H_IN - 14, text="Enter 보내기 · Esc 닫기 · 멈추면 3초 뒤 자동",
+        cv.create_text(W - 22, H_IN - 14, text="Enter 보내기 · Esc 취소·멈춤 · 멈추면 3초 뒤 자동",
                        fill="#636366", font=f_tag, anchor="e")
         cv.create_window(30, 67, window=entry, anchor="w", width=W - 60, height=30)
 
