@@ -63,3 +63,4 @@ ai/issues_seen.json
 *.pt
 *.bin
 *.safetensors
+ai/reddit_config.json
