@@ -29,7 +29,7 @@ DEFAULTS = {
     "wake":      {"enabled": False, "phrase": "코멧"},
     # issues: AI·경제 소식을 강도(굵직/볼만함/잔잔)로 걸러 화면 배너 + 음성. 로직은 issues.py
     #   modes 값 = 끔 | 굵직 | 보통 | 전부.  quiet = [시작시, 끝시] 이 시간엔 소리 없이 배너만(없으면 [])
-    "issues":    {"enabled": False, "interval_sec": 900,
+    "issues":    {"enabled": False, "interval_sec": 120,
                   "modes": {"ai": "굵직", "econ": "굵직"}, "quiet": []},
 }
 
@@ -288,17 +288,21 @@ class IssuesMode(_Mode):
         return issues.check(dict(self.cfg.get("modes") or {}), gpu_busy_fn=self.gpu_busy_fn,
                             quiet_hours=self.cfg.get("quiet") or None, log=self.log, dry=dry)
 
+    def interval(self):
+        # 한 바퀴 수집이 ~10초(2026-09-17 실측: AI 3.1 + 경제 6.5). 1분 밑으로는 안 내린다
+        # — 레딧·구글뉴스 RSS 는 키 없이 자주 치면 막힌다(막혀도 그 소스만 0건, _safe).
+        return max(60, int(self.cfg.get("interval_sec", 120)))
+
     def _run(self):
         import issues
-        interval = max(300, int(self.cfg.get("interval_sec", 900)))
         try:
             if not issues._load(issues.SEEN_FILE, []):
                 issues.check(dict(self.cfg.get("modes") or {}), log=self.log, baseline=True)
                 self.log("[issues] 처음 켬 — 지금 떠 있는 소식은 본 것으로 등록(다음 점검부터 새 소식만)")
         except Exception as e:
             self.log(f"[issues] 베이스라인 실패: {e}")
-        self.log(f"[issues] 가동 — {interval // 60}분마다 · {self.cfg.get('modes')}")
-        while not self._stop.wait(interval):
+        self.log(f"[issues] 가동 — {self.interval() // 60}분마다 · {self.cfg.get('modes')}")
+        while not self._stop.wait(self.interval()):     # 매 바퀴 다시 읽는다 — '알림 주기' 가 바로 먹게
             try:
                 self.check_now()
             except Exception as e:
@@ -451,7 +455,7 @@ class Autonomy:
             q = c.get("quiet") or []
             return ("이슈 알림: " + ("켜짐" if m.is_on() else "꺼짐") + " — "
                     + " · ".join(f"{issues.CAT_NAME[k]} {v}" for k, v in c["modes"].items())
-                    + f" · {c.get('interval_sec', 900) // 60}분마다"
+                    + f" · {m.interval() // 60}분마다"
                     + (f" · 조용한 시간 {q[0]}~{q[1]}시" if q else "")
                     + "\n바꾸기: 알림 켜 / 알림 끔 / 알림 ai 보통 / 알림 경제 굵직 / 알림 지금 / 알림 테스트 / 알림 기록")
         if body in ("끔", "꺼", "off"):
@@ -472,7 +476,7 @@ class Autonomy:
             _sync()
             return ("이슈 알림 켬 — "
                     + " · ".join(f"{issues.CAT_NAME[k]} {v}" for k, v in c["modes"].items())
-                    + f" · {c.get('interval_sec', 900) // 60}분마다. (끄기: 알림 끔)")
+                    + f" · {m.interval() // 60}분마다. (끄기: 알림 끔)")
         if body in ("지금", "점검", "now"):
             r = m.check_now()
             n = sum(r.values())
@@ -488,6 +492,14 @@ class Autonomy:
             return "최근 알림:\n" + "\n".join(
                 f"  {r['at'][5:16]} [{issues.CAT_NAME.get(r['cat'], r['cat'])}·{issues.LEVEL_NAME.get(r['level'])}] "
                 f"{r.get('ko') or r['title']}" for r in reversed(rows))
+        if body.startswith("주기"):
+            mm = __import__("re").match(r"(\d+)(초|분)?", body[2:])
+            if not mm:
+                return f"지금 {m.interval() // 60}분마다. 바꾸기: 알림 주기 2 (분) / 알림 주기 90초 — 최소 1분"
+            sec = int(mm.group(1)) * (1 if mm.group(2) == "초" else 60)
+            c["interval_sec"] = max(60, sec)
+            _save_cfg(self.cfg)
+            return f"이슈 알림 {c['interval_sec']}초마다 확인 (다음 바퀴부터)."
         if body.startswith("조용"):
             rest = body[2:]
             if rest in ("끔", "꺼", "해제", "off"):
