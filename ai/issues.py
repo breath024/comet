@@ -643,6 +643,106 @@ def _koreanize(items, busy=False):
 
 
 # ═══════════════════════════════════════════════════════════════
+#  방금 보여준 소식 — "그거 내용 봐봐" 가 가리키는 것
+#   배너·음성으로 내보낸 항목을 파일에 적어둔다. 데몬(알림 스레드)과 콘솔이 다른
+#   프로세스라 메모리로는 안 통해서 파일로 둔다. 알림 기록(LOG_FILE)과 따로인 이유는
+#   '뉴스'·'알림 다시'(record=False)로 본 것도 "그거"에 걸려야 하기 때문.
+# ═══════════════════════════════════════════════════════════════
+SHOWN_FILE = os.path.join(_DIR, "issues_shown.json")
+
+
+def _remember_shown(cat, items):
+    try:
+        _save(SHOWN_FILE, {"at": time.time(), "cat": cat,
+                           "items": [{k: it.get(k) for k in
+                                      ("title", "ko", "detail", "why", "url", "level", "lead")}
+                                     for it in items[:5]]})
+    except Exception:
+        pass
+
+
+def last_shown(max_age_h=6):
+    """(항목들, 몇 분 전) — 없거나 오래됐으면 ([], None)."""
+    d = _load(SHOWN_FILE, {})
+    items = d.get("items") or []
+    if not items:
+        # 이 파일이 생기기 전에 알린 것들 — 알림 기록의 마지막 묶음으로 대신한다
+        logs = _load(LOG_FILE, [])
+        if not logs:
+            return [], None
+        last_at = logs[-1].get("at", "")
+        rows = [r for r in logs[-5:] if r.get("at") == last_at]
+        try:
+            t = datetime.fromisoformat(last_at).timestamp()
+        except Exception:
+            return [], None
+        d, items = {"at": t}, rows
+    age_min = (time.time() - d.get("at", 0)) / 60
+    if age_min > max_age_h * 60:
+        return [], None
+    return items, int(age_min)
+
+
+def _korean_body(title, lead):
+    """원문 앞부분이 영어면 한국어로 옮겨서 돌려준다(소리로 읽어주려면 필요).
+       실패하면 원문 그대로 — 영어로라도 보여주는 편이 아무것도 없는 것보다 낫다."""
+    if not lead:
+        return ""
+    if len(re.findall(r"[가-힣]", lead)) >= 20:
+        return lead
+    try:
+        import ollama
+        r = ollama.Client(timeout=120).chat(
+            model=SUMMARY_MODEL, think=False, keep_alive="2m",
+            options={"temperature": 0, "num_predict": 500},
+            messages=[{"role": "user", "content":
+                       "아래 기사의 앞부분을 한국어 3문장 이내로 옮겨라. 반말로. "
+                       "숫자·누가·무엇을 살리고, 주어진 글에 없는 사실은 절대 쓰지 마라. "
+                       "설명이나 머리말 없이 본문만.\n\n"
+                       f"제목: {title}\n본문 앞부분: {lead}"}])
+        out = (r["message"].get("content") or "").strip()
+        return out or lead
+    except Exception:
+        return lead
+
+
+def detail_of_last(idx=0, max_age_h=6):
+    """방금 알린 소식의 내용을 길게. 원문 앞부분을 그 자리에서 받아온다(없으면 요약이라도)."""
+    items, age = last_shown(max_age_h)
+    if not items:
+        return None
+    it = items[idx] if idx < len(items) else items[0]
+    body = it.get("lead") or ""
+    if not body and it.get("url"):
+        try:
+            body = _lead(it["url"])
+        except Exception:
+            body = ""
+    when = "방금" if (age or 0) < 10 else f"{age}분 전" if age < 120 else f"{age // 60}시간 전"
+    head = it.get("ko") or it.get("title") or ""
+    body = _korean_body(it.get("title") or head, body)
+    out = [f"{when} 알린 소식이야. {_sentence(head)}"]
+    # 알림 때 붙였던 한 줄 요약과 원문 앞부분이 사실상 같은 말인 경우가 많다 — 긴 쪽만 남긴다
+    summary = it.get("detail") or ""
+    if summary and body and _similar(_tokens(summary), _tokens(body)):
+        summary, body = ("", body) if len(body) >= len(summary) else (summary, "")
+    if summary:
+        out.append(summary)
+    if body:
+        out.append(body)
+    if not it.get("detail") and not body:
+        out.append("원문 앞부분을 못 가져왔어. 링크로 봐야 할 것 같아.")
+    if it.get("title") and it.get("ko"):
+        out.append(f"(원제: {it['title']})")
+    if it.get("url"):
+        out.append(it["url"])
+    if len(items) > 1:
+        rest = ", ".join((x.get("ko") or x.get("title") or "")[:30] for x in items[1:3])
+        out.append(f"같이 알린 것: {rest}")
+    return "\n".join(out)
+
+
+# ═══════════════════════════════════════════════════════════════
 #  전달 — 화면 배너 + 음성
 # ═══════════════════════════════════════════════════════════════
 def popup(tag, title, body="", level=2, sec=8.0):
@@ -698,6 +798,7 @@ def deliver(cat, items, *, speak=True, show=True, log=print, record=True):
         return
     items = sorted(items, key=lambda x: -x["level"])
     top = items[0]
+    _remember_shown(cat, items)     # "그거 내용 봐봐" 가 가리킬 것 (record 여부와 무관하게 남긴다)
     name = CAT_NAME.get(cat, cat)
     line = top.get("ko") or top["title"]
     more = f" 외 {len(items) - 1}건" if len(items) > 1 else ""
