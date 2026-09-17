@@ -39,6 +39,12 @@ _comet = comet.Comet()
 _comet.auto_approve = True        # 데몬(폰)은 input() 불가 → 자동승인. 콘솔은 False(기본).
 _lock = threading.Lock()          # 단일 사용자 — 요청 직렬화로 history 보호
 _comet.autonomy.modes["talk"].lock = _lock   # Alt 두 번 말걸기도 폰 요청과 같은 줄에 선다
+try:
+    import voice as _voice
+    if _voice.ducker.recover():
+        print("[덕킹] 지난번에 줄인 채 끝난 앱 볼륨을 되돌림")
+except Exception as _e:
+    print(f"[덕킹] 복구 건너뜀: {_e}")
 
 
 # ── 접속 토큰: 없으면 생성, 있으면 로드 (이 파일은 공유 금지) ──

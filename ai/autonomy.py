@@ -480,6 +480,7 @@ class TalkMode(_Mode):
         import tempfile
         import subprocess
         d = tempfile.mkdtemp(prefix="comet_ask_")
+        ducked = False
         has = lambda name: os.path.exists(os.path.join(d, name))  # noqa: E731
 
         def state(stage, text=""):
@@ -503,14 +504,20 @@ class TalkMode(_Mode):
 
             # 1) 말 — 타이핑을 시작하거나 창을 닫으면 바로 멈춘다
             heard = ""
+            import voice
             if self._ear is None:
                 state("loading")
                 self._preload()
             if self._ear is not None and not (has("typing") or has("closed")):
                 state("listening")
+                voice.ducker.on()             # 내가 말하는 동안 다른 소리 낮춤
+                ducked = True
                 heard = self._ear.listen(stop_fn=lambda: has("typing") or has("closed"),
                                          start_timeout=self.START_TIMEOUT)
                 self._trace(f"듣기 끝 {self._ear.last_stats} → {heard!r}")
+                if not heard:                 # 말로 물었으면 대답 끝까지 낮춘 채로(오르내리면 거슬린다)
+                    voice.ducker.off()
+                    ducked = False
             if has("closed"):
                 return
             # 2) 타이핑 — 보낼 때까지(3초 멈춤 / Enter) 기다린다
@@ -543,6 +550,8 @@ class TalkMode(_Mode):
             self._trace(f"오류: {e!r}")
             state("error", str(e))
         finally:
+            if ducked:
+                voice.ducker.off()
             self._busy.release()
 
     def _run(self):

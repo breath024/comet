@@ -61,6 +61,121 @@ def clean_for_speech(text: str) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════
+#  다른 소리 줄이기 (덕킹) — 코멧이 말하거나 내가 말하는 동안 다른 앱 볼륨을 낮춘다
+#   윈도우 앱별 볼륨(pycaw). 겹쳐 불러도 되게 횟수를 센다(말걸기 창 안에서 말하기 등).
+#   ★줄인 값을 파일에도 적어둔다 — 데몬이 도중에 죽으면 다음 시작 때 되돌린다.
+#   ★되돌릴 때 지금 볼륨이 우리가 줄인 값 그대로일 때만 — 그 사이 내가 손댔으면 안 건드린다.
+# ═══════════════════════════════════════════════════════════════
+DUCK       = True
+DUCK_LEVEL = 0.2          # 다른 앱을 원래 볼륨의 20% 로
+_DUCK_FILE = os.path.join(_DIR, "duck_state.json")
+
+
+class _Ducker:
+    def __init__(self):
+        import threading
+        self.lock = threading.Lock()
+        self.count = 0
+        self.saved = []             # [(session, 원래볼륨, 줄인볼륨)]
+
+    @staticmethod
+    def _sessions():
+        import comtypes
+        try:
+            comtypes.CoInitialize()     # 데몬 스레드마다 COM 초기화가 필요하다
+        except OSError:
+            pass
+        from pycaw.pycaw import AudioUtilities
+        me = os.getpid()
+        return [s for s in AudioUtilities.GetAllSessions()
+                if s.Process and s.ProcessId not in (0, me)]
+
+    @staticmethod
+    def _fade(pairs, steps=6, dt=0.025):
+        for i in range(1, steps + 1):
+            for vol, a, b in pairs:
+                try:
+                    vol.SetMasterVolume(a + (b - a) * i / steps, None)
+                except Exception:
+                    pass
+            time.sleep(dt)
+
+    def on(self):
+        if not DUCK:
+            return
+        with self.lock:
+            self.count += 1
+            if self.count > 1:
+                return
+            try:
+                saved, pairs = [], []
+                for s in self._sessions():
+                    v = s.SimpleAudioVolume
+                    cur = v.GetMasterVolume()
+                    if cur <= 0.01:
+                        continue
+                    low = round(cur * DUCK_LEVEL, 3)
+                    saved.append((s, cur, low))
+                    pairs.append((v, cur, low))
+                self.saved = saved
+                with open(_DUCK_FILE, "w", encoding="utf-8") as f:
+                    json.dump([{"pid": s.ProcessId, "vol": c, "low": lo} for s, c, lo in saved], f)
+                self._fade(pairs)
+            except Exception as e:
+                print(f"  [덕킹 오류] {e}")
+
+    def off(self):
+        if not DUCK:
+            return
+        with self.lock:
+            if self.count == 0:
+                return
+            self.count -= 1
+            if self.count > 0:
+                return
+            try:
+                pairs = []
+                for s, cur, low in self.saved:
+                    v = s.SimpleAudioVolume
+                    now = v.GetMasterVolume()
+                    if abs(now - low) < 0.01:           # 그 사이 내가 바꿨으면 그대로 둔다
+                        pairs.append((v, now, cur))
+                self._fade(pairs)
+            except Exception as e:
+                print(f"  [덕킹 복구 오류] {e}")
+            self.saved = []
+            try:
+                os.remove(_DUCK_FILE)
+            except OSError:
+                pass
+
+    def recover(self):
+        """지난번에 줄인 채로 죽었으면 되돌린다(데몬 시작 때 한 번)."""
+        if not os.path.exists(_DUCK_FILE):
+            return 0
+        n = 0
+        try:
+            with open(_DUCK_FILE, encoding="utf-8") as f:
+                rows = {r["pid"]: r for r in json.load(f)}
+            for s in self._sessions():
+                r = rows.get(s.ProcessId)
+                v = s.SimpleAudioVolume
+                if r and abs(v.GetMasterVolume() - r["low"]) < 0.01:
+                    v.SetMasterVolume(r["vol"], None)
+                    n += 1
+        except Exception as e:
+            print(f"  [덕킹 복구 오류] {e}")
+        try:
+            os.remove(_DUCK_FILE)
+        except OSError:
+            pass
+        return n
+
+
+ducker = _Ducker()
+
+
+# ═══════════════════════════════════════════════════════════════
 #  숫자 → 한글 읽기 (아야카용)
 #   GPT-SoVITS 한국어 g2p 는 소수점·%·~ 를 제대로 못 읽는다 — "2.8%" 가 "이-" 로 나왔다(2026-09-18).
 #   게다가 clean_for_speech 가 ~ · - 를 지우므로 그 전에 바꿔야 한다.
@@ -263,10 +378,14 @@ class Mouth:
                 await edge_tts.Communicate(text, voice=self.voice, rate=self.rate).save(path)
                 data, sr = sf.read(path)
                 data = data * self.gain          # 음량 조절
-            if SHOW_ORB:
-                show_orb(data, sr)           # 형체 먼저 띄우고(첫 프레임까지 대기)
-            sd.play(data, sr)
-            sd.wait()
+            ducker.on()                      # 다른 앱 소리 낮추고
+            try:
+                if SHOW_ORB:
+                    show_orb(data, sr)       # 형체 먼저 띄우고(첫 프레임까지 대기)
+                sd.play(data, sr)
+                sd.wait()
+            finally:
+                ducker.off()
         finally:
             if path and os.path.exists(path):
                 os.remove(path)
