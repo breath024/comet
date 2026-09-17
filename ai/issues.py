@@ -557,7 +557,23 @@ def _say(text):
         print(f"  [이슈 TTS 오류] {e}")
 
 
-def deliver(cat, items, *, speak=True, show=True, log=print):
+def _speech(name, items):
+    """여러 건이면 '먼저 ~. 다음은 ~. 마지막으로 ~.' 로 이어 읽는다(최대 3건).
+       한국어 한 줄이 '~발표했어' 같은 문장이라 '~가 있고' 로 잇지 않는다."""
+    lines = [re.sub(r"[.!?。…\s]+$", "", x.get("ko") or x["title"]) for x in items[:3]]
+    head = "굵직한 " if items[0]["level"] == 3 else ""
+    if len(items) == 1:
+        return f"{name} 쪽에 {head}소식 있어. {lines[0]}."
+    out = f"{name} 쪽에 {head}소식 {len(items)}건 있어. 먼저 {lines[0]}. 다음은 {lines[1]}."
+    if len(lines) > 2:
+        out += f" 마지막으로 {lines[2]}."
+    if len(items) > 3:
+        out += f" 나머지 {len(items) - 3}건은 화면에 있어."
+    return out
+
+
+def deliver(cat, items, *, speak=True, show=True, log=print, record=True):
+    """record=False: '알림 다시'·'뉴스' 처럼 다시 보여주기만 할 때 — 알림 기록에 또 쌓지 않는다."""
     if not items:
         return
     items = sorted(items, key=lambda x: -x["level"])
@@ -572,8 +588,9 @@ def deliver(cat, items, *, speak=True, show=True, log=print):
     if show:
         popup(tag, line, body, top["level"], sec=6 + 2 * top["level"])
     if speak:
-        head = "굵직한 " if top["level"] == 3 else ""
-        _say(f"{name} 쪽에 {head}소식 있어. {line}.{(' 그 외 ' + str(len(items) - 1) + '건 더 있어.') if more else ''}")
+        _say(_speech(name, items))
+    if not record:
+        return
     logs = _load(LOG_FILE, [])
     for it in items:
         logs.append({"at": datetime.now().isoformat(timespec="seconds"), "cat": cat,
@@ -581,6 +598,57 @@ def deliver(cat, items, *, speak=True, show=True, log=print):
                      "why": it.get("why"), "url": it.get("url")})
     _save(LOG_FILE, logs[-300:])
     log(f"[이슈] {name} {len(items)}건 알림 — {line}")
+
+
+# ═══════════════════════════════════════════════════════════════
+#  요청하면 다시 — '뉴스'(지금 뜬 것 모아보기) / '알림 다시'(최근 알린 것 다시 듣기)
+#  둘 다 알림 기록·본 목록(seen)을 안 건드린다 — 자율 점검 스레드와 같은 파일을 동시에 쓰지 않으려고.
+# ═══════════════════════════════════════════════════════════════
+def news_digest(min_level=2, per_cat=5, *, gpu_busy_fn=None, speak=True, show=True, log=print):
+    """이미 알린 것까지 포함해 지금 뜬 AI·경제 소식을 강도순으로. 화면용 글을 돌려주고, 분야별로 배너+음성."""
+    busy, _ = gpu_busy_fn() if gpu_busy_fn else (False, "")
+    picked = {}
+    for cat, fn in COLLECTORS.items():
+        try:
+            found = [x for x in fn() if x["level"] >= min_level]
+        except Exception as e:
+            log(f"[뉴스] {cat} 수집 실패: {e}")
+            continue
+        rows = _filter_new(found, [])[:per_cat]      # 빈 seen → 같은 사건끼리만 하나로 줄인다
+        if rows:
+            picked[cat] = rows
+    if not picked:
+        return "지금은 볼만한 AI·경제 소식이 없어."
+    if not busy:
+        _koreanize([x for rows in picked.values() for x in rows])
+    text = []
+    for cat, rows in picked.items():
+        text.append(f"[{CAT_NAME[cat]}]")
+        text += [f"  {LEVEL_NAME[x['level']]} · {x.get('ko') or x['title']}  ({x.get('why', '')})" for x in rows]
+    for cat, rows in picked.items():
+        deliver(cat, rows, speak=speak, show=show and not busy, log=log, record=False)
+    return "\n".join(text)
+
+
+def replay(n=3, *, speak=True, show=True, log=print):
+    """최근 알린 것 n건을 다시 배너+음성으로. 분야별로 묶어서."""
+    rows, titles = [], set()
+    for r in reversed(_load(LOG_FILE, [])):           # 같은 제목이 여러 번 기록돼 있어도 한 번만
+        if r["title"] not in titles:
+            titles.add(r["title"])
+            rows.insert(0, r)
+        if len(rows) >= n:
+            break
+    if not rows:
+        return "아직 알린 기록 없음."
+    by_cat = {}
+    for r in reversed(rows):                          # 최근 것부터
+        by_cat.setdefault(r["cat"], []).append(r)
+    for cat, items in by_cat.items():
+        deliver(cat, items, speak=speak, show=show, log=log, record=False)
+    return "최근 알림 다시:\n" + "\n".join(
+        f"  {r['at'][5:16]} [{CAT_NAME.get(r['cat'], r['cat'])}·{LEVEL_NAME.get(r['level'])}] "
+        f"{r.get('ko') or r['title']}" for r in reversed(rows))
 
 
 # ═══════════════════════════════════════════════════════════════

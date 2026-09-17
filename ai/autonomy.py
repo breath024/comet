@@ -457,7 +457,8 @@ class Autonomy:
                     + " · ".join(f"{issues.CAT_NAME[k]} {v}" for k, v in c["modes"].items())
                     + f" · {m.interval() // 60}분마다"
                     + (f" · 조용한 시간 {q[0]}~{q[1]}시" if q else "")
-                    + "\n바꾸기: 알림 켜 / 알림 끔 / 알림 ai 보통 / 알림 경제 굵직 / 알림 지금 / 알림 테스트 / 알림 기록")
+                    + "\n바꾸기: 알림 켜 / 알림 끔 / 알림 ai 보통 / 알림 경제 굵직 / 알림 지금 / 알림 테스트 / 알림 기록"
+                    + "\n다시 듣기: 알림 다시 (최근 3건) · 지금 뉴스 모아보기: 뉴스")
         if body in ("끔", "꺼", "off"):
             # 끄기 전 강도를 적어둔다 — '알림 켜' 로 그대로 되살리려고
             if any(v != "끔" for v in c["modes"].values()):
@@ -485,6 +486,11 @@ class Autonomy:
             issues.deliver("ai", [{"level": 3, "title": "테스트 알림", "ko": "알림 테스트야, 잘 보이면 된 거야",
                                    "why": "COMET 이슈 알림 테스트"}], log=self.log)
             return "테스트 배너·음성 보냈어."
+        if body.startswith(("다시", "again")):
+            mm = __import__("re").search(r"\d+", body)
+            return issues.replay(min(10, int(mm.group())) if mm else 3, log=self.log)
+        if body in ("뉴스", "모아", "news"):
+            return issues.news_digest(gpu_busy_fn=m.gpu_busy_fn, log=self.log)
         if body in ("기록", "로그", "log"):
             rows = issues._load(issues.LOG_FILE, [])[-8:]
             if not rows:
@@ -522,7 +528,7 @@ class Autonomy:
                 desc = {"굵직": "굵직한 것만", "보통": "볼만한 것부터", "전부": "잔잔한 것까지 전부", "끔": "안 알림"}
                 return f"{issues.CAT_NAME[cat]} 알림 → {level} ({desc[level]})."
         return ("알림 사용법: 알림 / 알림 켜 / 알림 끔 / 알림 ai 굵직|보통|전부|끔 / 알림 경제 … / "
-                "알림 지금 / 알림 테스트 / 알림 기록 / 알림 조용 2-8")
+                "알림 지금 / 알림 테스트 / 알림 기록 / 알림 다시 / 알림 조용 2-8 / 뉴스")
 
     # comet 의 "자율모드 ..." 한 줄 명령 파서
     def command(self, low):
