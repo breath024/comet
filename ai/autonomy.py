@@ -427,7 +427,8 @@ class Autonomy:
     # comet 의 "알림 ..." 한 줄 명령 파서 (low = 공백 뺀 소문자)
     #   알림                → 상태
     #   알림 ai 굵직|보통|전부|끔 / 알림 경제 ...   → 분야별 모드 (하나라도 켜지면 자율모드 issues 도 켬)
-    #   알림 끔             → 전부 끔 / 알림 지금 → 바로 한 번 점검 / 알림 테스트 → 배너+음성 샘플
+    #   알림 켜             → 끄기 전 강도로 되살림(없으면 굵직) / 알림 끔 → 전부 끔
+    #   알림 지금 → 바로 한 번 점검 / 알림 테스트 → 배너+음성 샘플
     #   알림 조용 2-8       → 2시~8시엔 소리 없이 배너만 / 알림 조용 끔
     #   알림 기록           → 최근 알린 것
     def issues_command(self, low):
@@ -452,12 +453,26 @@ class Autonomy:
                     + " · ".join(f"{issues.CAT_NAME[k]} {v}" for k, v in c["modes"].items())
                     + f" · {c.get('interval_sec', 900) // 60}분마다"
                     + (f" · 조용한 시간 {q[0]}~{q[1]}시" if q else "")
-                    + "\n바꾸기: 알림 ai 보통 / 알림 경제 굵직 / 알림 끔 / 알림 지금 / 알림 테스트 / 알림 기록")
+                    + "\n바꾸기: 알림 켜 / 알림 끔 / 알림 ai 보통 / 알림 경제 굵직 / 알림 지금 / 알림 테스트 / 알림 기록")
         if body in ("끔", "꺼", "off"):
+            # 끄기 전 강도를 적어둔다 — '알림 켜' 로 그대로 되살리려고
+            if any(v != "끔" for v in c["modes"].values()):
+                c["last_modes"] = dict(c["modes"])
             for k in c["modes"]:
                 c["modes"][k] = "끔"
             _sync()
-            return "이슈 알림 전부 끔."
+            return "이슈 알림 전부 끔. (다시 켜기: 알림 켜)"
+        if body in ("켜", "켬", "온", "on"):
+            prev = c.get("last_modes") or {}
+            for k in c["modes"]:
+                c["modes"][k] = prev.get(k, "끔")
+            if all(v == "끔" for v in c["modes"].values()):   # 되살릴 게 없으면 기본값
+                for k in c["modes"]:
+                    c["modes"][k] = "굵직"
+            _sync()
+            return ("이슈 알림 켬 — "
+                    + " · ".join(f"{issues.CAT_NAME[k]} {v}" for k, v in c["modes"].items())
+                    + f" · {c.get('interval_sec', 900) // 60}분마다. (끄기: 알림 끔)")
         if body in ("지금", "점검", "now"):
             r = m.check_now()
             n = sum(r.values())
@@ -494,7 +509,8 @@ class Autonomy:
                 _sync()
                 desc = {"굵직": "굵직한 것만", "보통": "볼만한 것부터", "전부": "잔잔한 것까지 전부", "끔": "안 알림"}
                 return f"{issues.CAT_NAME[cat]} 알림 → {level} ({desc[level]})."
-        return "알림 사용법: 알림 / 알림 ai 굵직|보통|전부|끔 / 알림 경제 … / 알림 끔 / 알림 지금 / 알림 테스트 / 알림 기록 / 알림 조용 2-8"
+        return ("알림 사용법: 알림 / 알림 켜 / 알림 끔 / 알림 ai 굵직|보통|전부|끔 / 알림 경제 … / "
+                "알림 지금 / 알림 테스트 / 알림 기록 / 알림 조용 2-8")
 
     # comet 의 "자율모드 ..." 한 줄 명령 파서
     def command(self, low):
