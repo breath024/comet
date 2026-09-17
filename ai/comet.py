@@ -779,7 +779,11 @@ class Comet:
                 return ans
         # ── 할일·일정 창구 (프로젝트별로 던져두고 마감·시각으로 되찾기) — todo_box.py ──
         #   모델 안 거침(= GPU 안 씀, 즉답). "할일이 뭐야?" 같은 일반 질문은 None → 대화로 흘림.
-        if re.match(r"^(할\s*일|투두|todo|일정|스케줄)", t.strip(), re.I):
+        if re.match(r"^(할\s*일|투두|todo|일정|스케줄|구글)", t.strip(), re.I):
+            import gtasks
+            ans = gtasks.command(t)              # '할일 가져오기·구글연결'은 여기서 먼저
+            if ans is not None:
+                return ans
             import todo_box
             ans = todo_box.command(t)
             if ans is not None:          # 목록 덤프를 대화기록에 안 쌓는다(이슈·알림 명령과 같은 관례)

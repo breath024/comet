@@ -65,6 +65,8 @@ def _conn():
         c.execute("ALTER TABLE memory ADD COLUMN tag TEXT")
     if "due" not in cols:                       # 기존 데이터 보존하고 칸만 덧붙인다
         c.execute("ALTER TABLE memory ADD COLUMN due TEXT")
+    if "src" not in cols:                       # 어디서 온 할일인지(gtasks:<id> 등). 직접 넣은 건 NULL
+        c.execute("ALTER TABLE memory ADD COLUMN src TEXT")
     return c
 
 
@@ -229,7 +231,7 @@ def add(content, tag=None, due=None):
 
 
 def _rows(status="open"):
-    q = ("SELECT id, content, status, created, updated, tag, due FROM memory "
+    q = ("SELECT id, content, status, created, updated, tag, due, src FROM memory "
          "WHERE kind='todo'")
     args = ()
     if status != "all":

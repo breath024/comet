@@ -48,6 +48,9 @@ ai/history.json
 ai/comet_usage.json
 ai/*.db
 
+# --- 구글 할 일 OAuth (client_secret·refresh_token = 비밀) ---
+ai/gtasks_config.json
+
 # --- 접수함 자동 생성물 (개인 일감·이슈가 그대로 적힌다, 공개 저장소) ---
 ai/TODO.md
 ai/ISSUES.md
