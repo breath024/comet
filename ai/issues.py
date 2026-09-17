@@ -489,15 +489,16 @@ def _filter_new(found, seen):
     fresh = []
     for it in sorted(found, key=lambda x: -x["level"]):
         tk = set(it.get("tokens") or [])
-        prev = None
+        # ★처음 걸린 하나만 보면 안 된다 — 옛날에 낮게 본 기록이 먼저 걸리면 '강도가 올랐다'로 착각해
+        #   이미 굵직으로 알린 걸 매 바퀴 다시 알렸다(2026-09-17, Emerald AI 3연속). 걸린 것 중 최고 강도와 비교.
+        prev = 0
         for s in seen + fresh:
             if s.get("cat") != it["cat"]:
                 continue
             if (it.get("key") and s.get("key") == it.get("key")) or \
                (not it.get("key") and not s.get("key") and _similar(tk, set(s.get("tokens") or []))):
-                prev = s
-                break
-        if prev and prev.get("level", 0) >= it["level"]:
+                prev = max(prev, s.get("level", 0))
+        if prev >= it["level"]:
             continue
         fresh.append(it)
     return fresh
