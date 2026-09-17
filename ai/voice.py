@@ -7,17 +7,35 @@
 # ═══════════════════════════════════════════════════════════════
 import os
 import re
+import sys
+import json
 import asyncio
+import subprocess
 import tempfile
+import time
 import numpy as np
 import sounddevice as sd
 import soundfile as sf
 import edge_tts
 
 # ── 말하기 설정 ──────────────────────────────────────────────
-TTS_VOICE  = "ko-KR-InJoonNeural"
-TTS_RATE   = "+25%"
-TTS_GAIN   = 0.55          # 출력 음량 배수 (1.0=원본). 실행 중 조절 가능
+TTS_VOICE  = "ko-KR-SunHiNeural"
+TTS_RATE   = "+10%"
+TTS_GAIN   = 0.19          # 출력 음량 배수 (1.0=원본). 0.32는 너무 컸다 (2026-09-17)
+
+# ── 아야카 목소리 (GPT-SoVITS 로 학습, 2026-09-17) ───────────
+#   별도 폴더·별도 venv(A.B.B.Y.S/gpt-sovits)의 api_v2.py 서버를 HTTP 로 부른다.
+#   서버가 안 떠 있으면 조용히 Edge-TTS(SunHi)로 떨어진다 — 말이 끊기지는 않는다.
+TTS_ENGINE   = "ayaka"     # "ayaka" | "edge"
+AYAKA_URL    = "http://127.0.0.1:9880/tts"
+AYAKA_REF    = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+                   os.path.abspath(__file__)))), "gpt-sovits", "mydata", "ayaka_ref.json")
+AYAKA_BOOST  = 1.7         # 아야카 출력이 Edge 보다 4.7dB 작다(-22.4 vs -17.7 LUFS) → 체감 음량 맞춤
+
+# ── 형체(화면 HUD) 설정 ──────────────────────────────────────
+SHOW_ORB  = True           # 말할 때 orb.py 를 띄운다. 끄려면 False
+ORB_HOP   = 0.02           # 포락선 한 칸 = 20ms (50Hz)
+_DIR      = os.path.dirname(os.path.abspath(__file__))
 
 # ── 듣기 설정 ────────────────────────────────────────────────
 STT_MODEL    = "small"     # 캐시됨. 더 정확히: medium (느림)
@@ -62,6 +80,92 @@ def synth_mp3(text: str, voice: str = TTS_VOICE, rate: str = TTS_RATE) -> bytes:
     return asyncio.run(_go())
 
 
+def envelope(data, sr, hop: float = ORB_HOP):
+    """재생할 PCM → RMS 열(0~1). 형체가 이걸 읽어서 실제 소리에 맞춰 움직인다.
+    스피커 루프백을 캡처할 필요가 없다 — 어차피 재생 직전에 파형을 손에 들고 있다."""
+    x = data.mean(axis=1) if getattr(data, "ndim", 1) > 1 else data
+    n = max(1, int(sr * hop))
+    m = len(x) // n
+    if m < 1:
+        return []
+    rms = np.sqrt((x[:m * n].reshape(m, n).astype(np.float64) ** 2).mean(axis=1))
+    peak = float(rms.max())
+    if peak <= 0:
+        return []
+    return [round(v, 3) for v in (rms / peak)]
+
+
+def show_orb(data, sr, wait: float = 2.5):
+    """형체를 띄우고 첫 프레임이 올라올 때까지만 잠깐 기다린다(소리와 시작을 맞추려고).
+    실패해도 말하기는 그대로 진행한다 — 장식이 본업을 막으면 안 된다."""
+    try:
+        env = envelope(data, sr)
+        if not env:
+            return
+        d = tempfile.mkdtemp(prefix="comet_orb_")
+        ep, rp = os.path.join(d, "env.json"), os.path.join(d, "ready")
+        with open(ep, "w", encoding="utf-8") as f:
+            json.dump({"hop": ORB_HOP, "env": env}, f)
+        py = sys.executable.replace("python.exe", "pythonw.exe")
+        if not os.path.exists(py):
+            py = sys.executable
+        subprocess.Popen([py, os.path.join(_DIR, "orb.py"), "--env", ep, "--ready", rp],
+                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        dead = time.time() + wait
+        while time.time() < dead and not os.path.exists(rp):
+            time.sleep(0.04)
+    except Exception as e:
+        print(f"  [형체 오류] {e}")
+
+
+_AYAKA_SPAWNED = False
+
+
+def start_ayaka_server():
+    """아야카 서버를 창 없이 띄운다(안 기다림). 한 프로세스에서 한 번만 시도.
+    모델 올리는 데 ~10초 — 그동안의 말은 Edge 로 나가고, 다음 말부터 아야카."""
+    global _AYAKA_SPAWNED
+    if _AYAKA_SPAWNED:
+        return
+    _AYAKA_SPAWNED = True
+    root = os.path.dirname(os.path.dirname(AYAKA_REF))          # .../gpt-sovits
+    py = os.path.join(root, ".venv", "Scripts", "pythonw.exe")
+    if not os.path.exists(py):
+        return
+    env = dict(os.environ, PYTHONIOENCODING="utf-8",
+               PYTHONPATH=root + os.pathsep + os.path.join(root, "GPT_SoVITS"))
+    log = open(os.path.join(root, "mydata", "server.log"), "a", encoding="utf-8")
+    subprocess.Popen([py, "api_v2.py", "-a", "127.0.0.1", "-p", "9880",
+                      "-c", "mydata/ayaka_infer.yaml"],
+                     cwd=root, env=env, stdout=log, stderr=log,
+                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    print("  [아야카] 서버 띄우는 중 — 이번 말은 Edge 로")
+
+
+def synth_ayaka(text: str, timeout: float = 30.0):
+    """아야카 서버에 합성 요청 → (파형, 샘플레이트). 서버가 없거나 실패하면 None."""
+    import io
+    import urllib.request
+    try:
+        with open(AYAKA_REF, encoding="utf-8") as f:
+            ref = json.load(f)
+        body = json.dumps({
+            "text": text, "text_lang": "ko",
+            "ref_audio_path": ref["ref_audio_path"], "prompt_text": ref["prompt_text"],
+            "prompt_lang": "ko", "text_split_method": "cut5",
+            "media_type": "wav", "parallel_infer": False,   # 짧은 문장은 끄는 쪽이 빠르다(실측 1.7~2.0초)
+        }).encode("utf-8")
+        req = urllib.request.Request(AYAKA_URL, data=body,
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return sf.read(io.BytesIO(r.read()))
+    except Exception as e:
+        print(f"  [아야카 없음 → Edge 로] {str(e)[:60]}")
+        if "10061" in str(e) or "refused" in str(e).lower():   # 서버가 아예 없을 때만 띄운다
+            start_ayaka_server()
+        return None
+
+
 class Mouth:
     def __init__(self, voice: str = TTS_VOICE, rate: str = TTS_RATE, gain: float = TTS_GAIN):
         self.voice = voice
@@ -80,11 +184,18 @@ class Mouth:
     async def _speak(self, text: str):
         path = None
         try:
-            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
-                path = f.name
-            await edge_tts.Communicate(text, voice=self.voice, rate=self.rate).save(path)
-            data, sr = sf.read(path)
-            data = data * self.gain          # 음량 조절
+            got = synth_ayaka(text) if TTS_ENGINE == "ayaka" else None
+            if got is not None:
+                data, sr = got
+                data = data * self.gain * AYAKA_BOOST
+            else:
+                with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+                    path = f.name
+                await edge_tts.Communicate(text, voice=self.voice, rate=self.rate).save(path)
+                data, sr = sf.read(path)
+                data = data * self.gain          # 음량 조절
+            if SHOW_ORB:
+                show_orb(data, sr)           # 형체 먼저 띄우고(첫 프레임까지 대기)
             sd.play(data, sr)
             sd.wait()
         finally:
