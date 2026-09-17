@@ -393,7 +393,23 @@ def _merge_community(found):
             continue
         c["level"] = min(2, c["level"])
         out.append(c)
+    for x in out:                       # 칼럼·질문형은 굵직이 아니면 잔잔으로 — '보통'에선 안 울린다
+        if x["level"] < 3 and _opinion(x["title"]):
+            x["level"] = 1
+            x["why"] = x.get("why", "") + " · 칼럼/질문형"
     return out
+
+
+# 칼럼·질문형 제목 — 사건이 아니라 의견이다.
+# "주식 시장이 우리가 생각하는 것과 다른 걸 말하고 있을까?" 가 '보통'에서 울려 당황(2026-09-17).
+OPINION = re.compile(
+    r"(\?\s*$|？\s*$|^(why|how|is|are|should|what|can|could|will|would|do|does|did|here'?s|opinion)\b|"
+    r"\b(opinion|analysis|column|commentary|explainer|op-ed)\b|"
+    r"칼럼|사설|기고|시론|논단|기자수첩|데스크|분석\]|\[해설|까\s*$|나\s*$|는가\s*$)", re.I)
+
+
+def _opinion(title):
+    return bool(OPINION.search(_clean_title(title)))
 
 
 # ═══════════════════════════════════════════════════════════════
