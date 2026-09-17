@@ -97,6 +97,14 @@ def _save(path, obj):
         pass
 
 
+def _ga(word):
+    """이/가 — 받침 있으면 '이'. 숫자·영문으로 끝나면 읽는 소리로(0영 1일 3삼 6육 7칠 8팔, L엘 M엠 N엔 R알)."""
+    c = (word or " ")[-1]
+    if "가" <= c <= "힣":
+        return "이" if (ord(c) - 0xAC00) % 28 else "가"
+    return "이" if c in "013678LMNRlmnr" else "가"
+
+
 def _clean_title(t):
     return re.sub(r"\s+-\s+[^-]{1,40}$", "", t or "").strip()     # 구글뉴스 " - 매체명" 떼기
 
@@ -449,7 +457,7 @@ def collect_econ():
                 verb = "원화 약세" if pct > 0 else "원화 강세"
             found.append({"cat": "econ", "level": lv, "lang": "ko",
                           "title": f"{name} {pct:+.2f}% {verb}",
-                          "ko": f"{name}가 {pct:+.1f}% 움직였어 ({verb})",
+                          "ko": f"{name}{_ga(name)} {pct:+.1f}% 움직였어 ({verb})",
                           "why": "Yahoo 실측", "url": "",
                           # 같은 날·같은 종목은 한 사건 — 단계가 오를 때만 다시 알린다
                           "key": f"mkt:{sym}:{datetime.now():%Y-%m-%d}",
@@ -512,26 +520,108 @@ def _mark_seen(items, seen):
 
 
 # ═══════════════════════════════════════════════════════════════
-#  한 줄 한국어로 — 로컬 LLM(사고 끔). GPU 바쁘면 건너뛰고 원제목 사용
+#  기사 내용 — 알릴 것만 원문을 찾아가 요약문(og:description)을 뽑는다
+#   구글뉴스 링크는 news.google.com 중간 주소라 batchexecute 로 원문 주소를 푼다(2026-09-17 실측 5/5).
+#   기사 페이지의 og:description 이 곧 리드 문단이다(한겨레·경향·중앙·NPR 확인, openai.com 은 403).
+#   실패하면 조용히 내용 없이 제목만 — 알림이 내용 때문에 막히면 안 된다.
 # ═══════════════════════════════════════════════════════════════
-def _koreanize(items):
-    todo = [it for it in items if not it.get("ko")]
+def _resolve_google(link, timeout=8):
+    import urllib.parse
+    aid = link.split("/articles/")[1].split("?")[0]
+    s = _get(f"https://news.google.com/rss/articles/{aid}", timeout)
+    sg = re.search(r'data-n-a-sg="([^"]+)"', s)
+    ts = re.search(r'data-n-a-ts="([^"]+)"', s)
+    if not (sg and ts):
+        return ""
+    inner = ["garturlreq", [["X", "X", ["X", "X"], None, None, 1, 1, "US:en", None, 1, None, None,
+                             None, None, None, 0, 1], "X", "X", 1, [1, 1, 1], 1, 1, None, 0, 0, None, 0],
+             aid, int(ts.group(1)), sg.group(1)]
+    body = "f.req=" + urllib.parse.quote(json.dumps([[["Fbv4je", json.dumps(inner), None, "generic"]]]))
+    req = urllib.request.Request("https://news.google.com/_/DotsSplashUi/data/batchexecute",
+                                 data=body.encode(), headers={
+                                     "User-Agent": BROWSER_UA,
+                                     "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"})
+    raw = urllib.request.urlopen(req, timeout=timeout).read().decode("utf-8", "ignore")
+    arr = json.loads(raw.split(chr(10) + chr(10))[1])
+    return json.loads(arr[0][2])[1]
+
+
+def _lead(url, timeout=8):
+    """기사 주소 → 앞부분 요약(최대 400자). 못 뽑으면 ""."""
+    import html as _h
+    if "news.google.com/rss/articles/" in url:
+        url = _resolve_google(url, timeout)
+    if not url.startswith("http"):
+        return ""
+    s = _get(url, timeout)
+    for pat in (r'<meta[^>]+(?:property|name)=["\'](?:og:description|description)["\'][^>]*content="([^"]+)"',
+                r'<meta[^>]+content="([^"]+)"[^>]*(?:property|name)=["\'](?:og:description|description)["\']'):
+        m = re.search(pat, s)
+        if m and len(m.group(1)) >= 40:
+            return _h.unescape(m.group(1)).strip()[:400]
+    ps = [_strip_tags(p) for p in re.findall(r"<p[^>]*>(.*?)</p>", s, re.S)]
+    return " ".join(p for p in ps if len(p) > 60)[:400]
+
+
+def _enrich(items):
+    """알릴 항목에 lead(원문 앞부분)를 붙인다. 커뮤니티 글·실측 등락은 건너뜀. 동시에 받는다."""
+    from concurrent.futures import ThreadPoolExecutor
+    todo = [it for it in items if it.get("url") and not it.get("community")
+            and not it.get("lead") and not it.get("detail")]
+
+    def one(it):
+        try:
+            it["lead"] = _lead(it["url"])
+        except Exception:
+            pass
+    if todo:
+        with ThreadPoolExecutor(6) as ex:
+            list(ex.map(one, todo))
+
+
+def _first_korean_sentence(t):
+    if not t or len(re.findall(r"[가-힣]", t)) < 10:
+        return ""
+    return re.split(r"(?<=[다요음])\.\s", t)[0].rstrip(".") + "."
+
+
+# ═══════════════════════════════════════════════════════════════
+#  한국어로 — 로컬 LLM(사고 끔). ko = 제목 한 줄, detail = 내용 1~2문장
+#  GPU 바쁘면 LLM 을 건너뛴다 — 원문이 한국어면 첫 문장을 내용으로 쓴다.
+# ═══════════════════════════════════════════════════════════════
+def _koreanize(items, busy=False):
+    todo = [it for it in items if not it.get("ko") or (it.get("lead") and not it.get("detail"))]
     if not todo:
+        return
+    if busy:
+        for it in todo:
+            if it.get("lead") and not it.get("detail"):
+                it["detail"] = _first_korean_sentence(it["lead"])
         return
     try:
         import ollama
-        listing = "\n".join(f"{i}. {it['title']}" for i, it in enumerate(todo))
-        prompt = ("아래 뉴스 제목들을 각각 한국어 한 문장(35자 이내)으로 옮겨라. 과장·추측 금지, "
-                  "제목에 없는 사실 추가 금지, 반말로 끝내라(예: '~했대', '~나왔어').\n"
-                  'JSON 만: {"items":[{"i":0,"ko":"..."}]}\n\n' + listing)
-        r = ollama.Client(timeout=90).chat(
+        listing = "\n".join(f"{i}. 제목: {it['title']}" + (f"\n   본문 앞부분: {it['lead']}" if it.get("lead") else "")
+                            for i, it in enumerate(todo))
+        prompt = ("아래 뉴스마다 두 가지를 한국어로 써라.\n"
+                  "ko: 제목을 한 문장(35자 이내)으로. 반말로 끝내라(예: '~했대', '~나왔어').\n"
+                  "detail: 본문 앞부분이 있으면 핵심 내용을 1~2문장(90자 이내)으로 — 숫자·누가·무엇을 우선. "
+                  "제목에 이미 있는 말을 되풀이하지 말고, 제목에 없는 정보(수치·배경·이유)를 써라. "
+                  "본문 앞부분이 없거나 더할 정보가 없으면 빈 문자열. 반말로.\n"
+                  "과장·추측 금지. 주어진 제목·본문에 없는 사실은 절대 쓰지 마라. "
+                  "제목이 질문이면 ko 도 질문으로 끝내라.\n"
+                  'JSON 만: {"items":[{"i":0,"ko":"...","detail":"..."}]}\n\n' + listing)
+        r = ollama.Client(timeout=120).chat(
             model=SUMMARY_MODEL, format="json", think=False, keep_alive="2m",
-            options={"temperature": 0, "num_predict": 800},
+            options={"temperature": 0, "num_predict": 2000},
             messages=[{"role": "user", "content": prompt}])
         for row in json.loads(r["message"]["content"]).get("items", []):
             i = int(row.get("i", -1))
-            if 0 <= i < len(todo) and (row.get("ko") or "").strip():
+            if not 0 <= i < len(todo):
+                continue
+            if (row.get("ko") or "").strip() and not todo[i].get("ko"):
                 todo[i]["ko"] = row["ko"].strip()
+            if (row.get("detail") or "").strip() and todo[i].get("lead"):
+                todo[i]["detail"] = row["detail"].strip()
     except Exception:
         pass
 
@@ -557,16 +647,25 @@ def _say(text):
         print(f"  [이슈 TTS 오류] {e}")
 
 
+def _sentence(t):
+    """끝맺음 정리 — 물음표는 살린다(지우면 질문 제목이 뜬금없는 단정으로 들렸다, 2026-09-17)."""
+    t = re.sub(r"[.。…\s]+$", "", t or "")
+    return t if t.endswith(("?", "!")) else t + "."
+
+
 def _speech(name, items):
-    """여러 건이면 '먼저 ~. 다음은 ~. 마지막으로 ~.' 로 이어 읽는다(최대 3건).
+    """여러 건이면 '먼저 ~. 다음은 ~. 마지막으로 ~.' 로 이어 읽는다(최대 3건). 내용(detail)이 있으면 제목 뒤에.
        한국어 한 줄이 '~발표했어' 같은 문장이라 '~가 있고' 로 잇지 않는다."""
-    lines = [re.sub(r"[.!?。…\s]+$", "", x.get("ko") or x["title"]) for x in items[:3]]
+    def one(x):
+        s = _sentence(x.get("ko") or x["title"])
+        return s + (" " + _sentence(x["detail"]) if x.get("detail") else "")
+    lines = [one(x) for x in items[:3]]
     head = "굵직한 " if items[0]["level"] == 3 else ""
     if len(items) == 1:
-        return f"{name} 쪽에 {head}소식 있어. {lines[0]}."
-    out = f"{name} 쪽에 {head}소식 {len(items)}건 있어. 먼저 {lines[0]}. 다음은 {lines[1]}."
+        return f"{name} 쪽에 {head}소식 있어. {lines[0]}"
+    out = f"{name} 쪽에 {head}소식 {len(items)}건 있어. 먼저 {lines[0]} 다음은 {lines[1]}"
     if len(lines) > 2:
-        out += f" 마지막으로 {lines[2]}."
+        out += f" 마지막으로 {lines[2]}"
     if len(items) > 3:
         out += f" 나머지 {len(items) - 3}건은 화면에 있어."
     return out
@@ -582,7 +681,7 @@ def deliver(cat, items, *, speak=True, show=True, log=print, record=True):
     line = top.get("ko") or top["title"]
     more = f" 외 {len(items) - 1}건" if len(items) > 1 else ""
     tag = f"COMET · {name} · {LEVEL_NAME[top['level']]}"
-    body = top.get("why", "") + more
+    body = (top["detail"][:90] + "\n" if top.get("detail") else "") + top.get("why", "") + more
     if len(items) > 1:
         body += "\n" + "\n".join("· " + (x.get("ko") or x["title"])[:48] for x in items[1:3])
     if show:
@@ -595,7 +694,7 @@ def deliver(cat, items, *, speak=True, show=True, log=print, record=True):
     for it in items:
         logs.append({"at": datetime.now().isoformat(timespec="seconds"), "cat": cat,
                      "level": it["level"], "title": it["title"], "ko": it.get("ko"),
-                     "why": it.get("why"), "url": it.get("url")})
+                     "detail": it.get("detail"), "why": it.get("why"), "url": it.get("url")})
     _save(LOG_FILE, logs[-300:])
     log(f"[이슈] {name} {len(items)}건 알림 — {line}")
 
@@ -619,12 +718,16 @@ def news_digest(min_level=2, per_cat=5, *, gpu_busy_fn=None, speak=True, show=Tr
             picked[cat] = rows
     if not picked:
         return "지금은 볼만한 AI·경제 소식이 없어."
-    if not busy:
-        _koreanize([x for rows in picked.values() for x in rows])
+    allrows = [x for rows in picked.values() for x in rows]
+    _enrich(allrows)
+    _koreanize(allrows, busy=busy)
     text = []
     for cat, rows in picked.items():
         text.append(f"[{CAT_NAME[cat]}]")
-        text += [f"  {LEVEL_NAME[x['level']]} · {x.get('ko') or x['title']}  ({x.get('why', '')})" for x in rows]
+        for x in rows:
+            text.append(f"  {LEVEL_NAME[x['level']]} · {x.get('ko') or x['title']}  ({x.get('why', '')})")
+            if x.get("detail"):
+                text.append(f"      {x['detail']}")
     for cat, rows in picked.items():
         deliver(cat, rows, speak=speak, show=show and not busy, log=log, record=False)
     return "\n".join(text)
@@ -686,8 +789,8 @@ def check(modes, *, gpu_busy_fn=None, quiet_hours=None, log=print, dry=False, ba
         if not hit:
             result[cat] = 0
             continue
-        if not busy:
-            _koreanize(hit)
+        _enrich(hit)
+        _koreanize(hit, busy=busy)
         if dry:
             for x in hit:
                 log(f"  [{LEVEL_NAME[x['level']]}] {x.get('ko') or x['title']}  ({x['why']})")
