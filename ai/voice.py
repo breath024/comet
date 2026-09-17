@@ -38,7 +38,10 @@ ORB_HOP   = 0.02           # 포락선 한 칸 = 20ms (50Hz)
 _DIR      = os.path.dirname(os.path.abspath(__file__))
 
 # ── 듣기 설정 ────────────────────────────────────────────────
-STT_MODEL    = "small"     # 캐시됨. 더 정확히: medium (느림)
+STT_MODEL    = "turbo"     # large-v3-turbo. small 은 한국어를 자주 틀렸다("뉴스 거야"→"뉴스드럼이야")
+#   2026-09-18 실측(정답 있는 한국어 12클립, GPU): small 글자오류 3.7% · medium 2.5% · turbo 1.3%(클립당 0.17초)
+#   GPU 에선 반정밀도로 올려 상주 1.5GB (불러오는 순간만 4.6GB)
+STT_PROMPT   = "코멧, 뉴스, 알림, 주식봇, 코인봇, 할일, 일정, 브리핑"   # 자주 쓰는 말 — 인식 쪽으로 기울인다
 SAMPLE_RATE  = 16000
 
 
@@ -283,7 +286,15 @@ class Ear:
         if self._model is None:
             import whisper
             print(f"  [STT] Whisper '{self.model_name}' 로딩 중... (처음 한 번)")
-            self._model = whisper.load_model(self.model_name)
+            import torch
+            self._cuda = torch.cuda.is_available()
+            m = whisper.load_model(self.model_name, device="cuda" if self._cuda else "cpu")
+            if self._cuda:
+                m = m.half()
+                for mod in m.modules():             # whisper 의 LayerNorm 은 float 가중치만 받는다
+                    if isinstance(mod, torch.nn.LayerNorm):
+                        mod.float()
+            self._model = m
             print("  [STT] 준비 완료")
 
     def listen(self, stop_fn=None, start_timeout=None) -> str:
@@ -295,7 +306,8 @@ class Ear:
             return ""
         if audio.size < self.sample_rate // 2:   # 0.5초 미만 = 무시
             return ""
-        result = self._model.transcribe(audio, fp16=False, language="ko")
+        result = self._model.transcribe(audio, fp16=getattr(self, "_cuda", False), language="ko",
+                                        initial_prompt=STT_PROMPT)
         return result["text"].strip()
 
     def _record(self, max_seconds=30, silence_thresh=0.015,

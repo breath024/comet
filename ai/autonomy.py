@@ -530,11 +530,13 @@ class TalkMode(_Mode):
                     return
                 state("heard", text)
             # 3) 대답 — 글로 보여주고 소리로도
+            import issues
+            asked_at = time.time()
             with self.lock:
                 reply = self.respond_fn(text, speak=False) or ""
             self._trace(f"대답 {len(reply)}자")
             state("reply", reply)
-            if reply and self.speak_fn:
+            if reply and self.speak_fn and issues._last_say < asked_at:   # '뉴스'처럼 이미 읽었으면 또 안 읽음
                 self.speak_fn(reply)
             state("done")
         except Exception as e:
@@ -725,8 +727,9 @@ class Autonomy:
         if body.startswith(("다시", "again")):
             mm = __import__("re").search(r"\d+", body)
             return issues.replay(min(10, int(mm.group())) if mm else 3, log=self.log)
-        if body in ("뉴스", "모아", "news"):
-            return issues.news_digest(gpu_busy_fn=m.gpu_busy_fn, log=self.log)
+        if body in ("뉴스", "뉴스ko", "뉴스en", "모아", "news"):
+            lang = body[2:] if body.startswith("뉴스") else ""
+            return issues.news_digest(gpu_busy_fn=m.gpu_busy_fn, log=self.log, lang=lang or None)
         if body in ("기록", "로그", "log"):
             rows = issues._load(issues.LOG_FILE, [])[-8:]
             if not rows:

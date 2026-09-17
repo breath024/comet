@@ -655,7 +655,12 @@ def popup(tag, title, body="", level=2, sec=8.0):
                      creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
 
+_last_say = 0.0     # 마지막으로 소리 낸 시각 — 말걸기 창이 같은 대답을 또 읽지 않게
+
+
 def _say(text):
+    global _last_say
+    _last_say = time.time()
     try:
         import voice
         voice.Mouth().speak(text)
@@ -719,13 +724,27 @@ def deliver(cat, items, *, speak=True, show=True, log=print, record=True):
 #  요청하면 다시 — '뉴스'(지금 뜬 것 모아보기) / '알림 다시'(최근 알린 것 다시 듣기)
 #  둘 다 알림 기록·본 목록(seen)을 안 건드린다 — 자율 점검 스레드와 같은 파일을 동시에 쓰지 않으려고.
 # ═══════════════════════════════════════════════════════════════
-def news_digest(min_level=2, per_cat=5, *, gpu_busy_fn=None, speak=True, show=True, log=print):
-    """이미 알린 것까지 포함해 지금 뜬 AI·경제 소식을 강도순으로. 화면용 글을 돌려주고, 분야별로 배너+음성."""
+KO_MARKETS = {"^KS11", "^KQ11", "KRW=X"}
+
+
+def _region_ok(it, lang):
+    """lang='ko' 한국 소식만 / 'en' 해외만. 실측 등락은 종목으로 가른다(코스피·코스닥·환율은 한국)."""
+    if not lang:
+        return True
+    key = it.get("key") or ""
+    if key.startswith("mkt:"):
+        return (key.split(":")[1] in KO_MARKETS) == (lang == "ko")
+    return (it.get("lang") or "ko") == lang
+
+
+def news_digest(min_level=2, per_cat=5, *, gpu_busy_fn=None, speak=True, show=True, log=print, lang=None):
+    """이미 알린 것까지 포함해 지금 뜬 AI·경제 소식을 강도순으로. 화면용 글을 돌려주고, 분야별로 배너+음성.
+       lang='ko'|'en' 이면 한국/해외 소식만."""
     busy, _ = gpu_busy_fn() if gpu_busy_fn else (False, "")
     picked = {}
     for cat, fn in COLLECTORS.items():
         try:
-            found = [x for x in fn() if x["level"] >= min_level]
+            found = [x for x in fn() if x["level"] >= min_level and _region_ok(x, lang)]
         except Exception as e:
             log(f"[뉴스] {cat} 수집 실패: {e}")
             continue
@@ -733,7 +752,11 @@ def news_digest(min_level=2, per_cat=5, *, gpu_busy_fn=None, speak=True, show=Tr
         if rows:
             picked[cat] = rows
     if not picked:
-        return "지금은 볼만한 AI·경제 소식이 없어."
+        where = {"ko": "한국 ", "en": "해외 "}.get(lang, "")
+        msg = f"지금은 볼만한 {where}AI·경제 소식이 없어."
+        if speak:
+            _say(msg)
+        return msg
     allrows = [x for rows in picked.values() for x in rows]
     _enrich(allrows)
     _koreanize(allrows, busy=busy)
