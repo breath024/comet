@@ -106,14 +106,16 @@ def _read_int(digits: str, after: str) -> str:
 def speak_numbers(text: str) -> str:
     t = re.sub(r"(?<=\d),(?=\d{3})", "", text)                         # 1,500 → 1500
     t = re.sub(r"(\d)\s*[~〜]\s*(?=[+\-]?\d)", r"\1에서 ", t)            # 3~4 → 3에서 4
-    t = re.sub(r"(?:(?<=^)|(?<=[\s(]))\+(?=\d)", "플러스 ", t)
-    t = re.sub(r"(?:(?<=^)|(?<=[\s(]))[-−](?=\d)", "마이너스 ", t)
+    t = re.sub(r"(?:(?<=^)|(?<=[\s(]))\+(?=\d)", "플러스", t)
+    t = re.sub(r"(?:(?<=^)|(?<=[\s(]))[-−](?=\d)", "마이너스", t)
     t = re.sub(r"\$\s?(\d[\d.]*)", r"\1달러", t)
-    t = re.sub(r"%\s?p\b|%\s?포인트", " 퍼센트포인트", t)
-    t = t.replace("%", " 퍼센트")
+    t = re.sub(r"%\s?p\b|%\s?포인트", "퍼센트포인트", t)
+    t = t.replace("%", "퍼센트")
 
+    # 소수는 붙여 읽는다(이점팔퍼센트) — 띄우면 끊겨 들린다. 뒤의 0은 안 읽는다(4.00 → 사, 3.50 → 삼점오)
     def dec(m):
-        return _sino(int(m.group(1))) + " 점 " + "".join(_SINO[int(c)] for c in m.group(2))
+        frac = m.group(2).rstrip("0")
+        return _sino(int(m.group(1))) + ("점" + "".join(_SINO[int(c)] for c in frac) if frac else "")
     t = re.sub(r"(\d+)\.(\d+)", dec, t)
     t = re.sub(r"\d+", lambda m: _read_int(m.group(), t[m.end():m.end() + 2].lstrip()), t)
     return t
