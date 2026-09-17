@@ -5,14 +5,27 @@ A.B.B.Y.S 프로젝트의 두뇌 레이어 (VOID의 형제).
 
 - **경로:** `C:\Users\USER\Desktop\개인프젝\A.B.B.Y.S\COMET\ai\`
 - **기계:** RTX 5070 Ti 16GB VRAM, Ryzen 9800X3D, 32GB RAM
-- 최종 업데이트: 2026-06-24 (**안정성/믿고맡기기**: comet.py의 모든 모델 호출 6곳을 `_gen()` 단일 통로로 통일 — **출력 상한(num_predict 1024) + 타임아웃(180s)** 일괄. 한 턴이 폭주(만 토큰)하거나 ollama가 얼어도 그 턴만 끊기고 `_lock`을 오래 안 쥐어 **데몬 전체가 안 얼어붙음**(이전엔 상한·타임아웃 0이라 폭주 한 번에 모든 요청 무한대기). 스트리밍 토큰 `.get()` 방어도 추가. 검증됨(num_predict=20→20토큰서 잘림, timeout=180 확인). **vision.py(300s+상한 1024/1536)·analyst.py(600s, 기존 상한 1300/1800 유지+플래너 512)도 동일 적용 완료** — 데몬 `_lock` 밑 모든 모델 호출(comet·vision·analyst)이 출력·시간 양쪽으로 묶여 어떤 생성도 데몬을 영구 정지 못 시킴. **+ 게임/바쁨 모드**: GPU가 게임으로 바쁘면(nvidia-smi 자동 감지: 사용률 55%↑ 또는 여유 VRAM 4.5GB↓) 무거운 등급을 light(4b)로 강등 + keep_alive 20s로 빠른 언로드 → 16GB 한 장에서 게임 중 27b 올리다 끊기는 것 방지. `게임모드 켜/꺼/자동` 수동 토글(콘솔·폰), auto여도 '무겁게' 명시는 존중. (※한계: analyst 분석은 27b 고정이라 게임모드 영향 안 받음 — 명시 호출이라 그대로 둠) **+ 자율모드 레이어 신설(autonomy.py 로 분리 = comet 안 불림)**: 모드 선택식 — `proactive`(주기적 뉴스감시→판단게이트→텔레그램 푸시, **모델 호출 0**=GPU 안 씀) · `wake`(부르면 듣기, openwakeword 엔진 필요). 켠 모드는 autonomy_config.json 저장·복원(검증됨). 명령 '자율모드'(상태)·'자율모드 proactive 켜/꺼'·'자율모드 wake 켜/꺼'. ⚠️**활성화 남은 셋업**: 텔레그램 chat_id는 **연결 완료(06-24)**. proactive 실제 푸시엔 watchlist 키워드 등록만 남음(비어 있으면 보류 로그). wake는 엔진 미설치라 게이트(설치 시 리스너 연결됨). + proactive 콘텐츠는 단순 뉴스묶음 대신 `market_brief`(일일 증시 브리핑)로 갈 예정 — 위 '📌 이어서 할 일' 참고. ※코더 감사 교훈: Explore 에이전트 발견 5개 중 3개가 거짓(코인/뉴스 크래시·데몬 즉사는 실제론 안전)이었음 — 검증 후 진짜 구멍 1개만 고침. 06-20 (**웹검색 자동발동**: 키워드 없이도 문지기 gemma3:4b가 '인터넷 사실 조회 필요'를 판정해 스스로 web_search. 추가 모델호출 0=기존 라우터 판정에 web 필드 얹음. medium 고정·기존 원천추적/trace/출처footer 재활용). 06-19: financials.py 재무·실적[Yahoo 무키 crumb], 실측 국면·밸류에이션 프롬프트 강제주입, 뉴스→정세로그, 토픽 별칭, 보유 스샷읽기(vision), web_search 트레이스. + 다국어 국가타겟 수집, marketlog 정세로그+가짜뉴스필터, trace.py, analyst 27b. 06-18: web.py+prices.py
+- 최종 업데이트: 2026-09-18 (목소리·말걸기·알림·회의 — 위 '📌 다음에 해야 할 것'과 ✅ 2026-09-17~18 참고). 이전: 2026-06-24 (**안정성/믿고맡기기**: comet.py의 모든 모델 호출 6곳을 `_gen()` 단일 통로로 통일 — **출력 상한(num_predict 1024) + 타임아웃(180s)** 일괄. 한 턴이 폭주(만 토큰)하거나 ollama가 얼어도 그 턴만 끊기고 `_lock`을 오래 안 쥐어 **데몬 전체가 안 얼어붙음**(이전엔 상한·타임아웃 0이라 폭주 한 번에 모든 요청 무한대기). 스트리밍 토큰 `.get()` 방어도 추가. 검증됨(num_predict=20→20토큰서 잘림, timeout=180 확인). **vision.py(300s+상한 1024/1536)·analyst.py(600s, 기존 상한 1300/1800 유지+플래너 512)도 동일 적용 완료** — 데몬 `_lock` 밑 모든 모델 호출(comet·vision·analyst)이 출력·시간 양쪽으로 묶여 어떤 생성도 데몬을 영구 정지 못 시킴. **+ 게임/바쁨 모드**: GPU가 게임으로 바쁘면(nvidia-smi 자동 감지: 사용률 55%↑ 또는 여유 VRAM 4.5GB↓) 무거운 등급을 light(4b)로 강등 + keep_alive 20s로 빠른 언로드 → 16GB 한 장에서 게임 중 27b 올리다 끊기는 것 방지. `게임모드 켜/꺼/자동` 수동 토글(콘솔·폰), auto여도 '무겁게' 명시는 존중. (※한계: analyst 분석은 27b 고정이라 게임모드 영향 안 받음 — 명시 호출이라 그대로 둠) **+ 자율모드 레이어 신설(autonomy.py 로 분리 = comet 안 불림)**: 모드 선택식 — `proactive`(주기적 뉴스감시→판단게이트→텔레그램 푸시, **모델 호출 0**=GPU 안 씀) · `wake`(부르면 듣기, openwakeword 엔진 필요). 켠 모드는 autonomy_config.json 저장·복원(검증됨). 명령 '자율모드'(상태)·'자율모드 proactive 켜/꺼'·'자율모드 wake 켜/꺼'. ⚠️**활성화 남은 셋업**: 텔레그램 chat_id는 **연결 완료(06-24)**. proactive 실제 푸시엔 watchlist 키워드 등록만 남음(비어 있으면 보류 로그). wake는 엔진 미설치라 게이트(설치 시 리스너 연결됨). + proactive 콘텐츠는 단순 뉴스묶음 대신 `market_brief`(일일 증시 브리핑)로 갈 예정 — 위 '📌 이어서 할 일' 참고. ※코더 감사 교훈: Explore 에이전트 발견 5개 중 3개가 거짓(코인/뉴스 크래시·데몬 즉사는 실제론 안전)이었음 — 검증 후 진짜 구멍 1개만 고침. 06-20 (**웹검색 자동발동**: 키워드 없이도 문지기 gemma3:4b가 '인터넷 사실 조회 필요'를 판정해 스스로 web_search. 추가 모델호출 0=기존 라우터 판정에 web 필드 얹음. medium 고정·기존 원천추적/trace/출처footer 재활용). 06-19: financials.py 재무·실적[Yahoo 무키 crumb], 실측 국면·밸류에이션 프롬프트 강제주입, 뉴스→정세로그, 토픽 별칭, 보유 스샷읽기(vision), web_search 트레이스. + 다국어 국가타겟 수집, marketlog 정세로그+가짜뉴스필터, trace.py, analyst 27b. 06-18: web.py+prices.py
 
 ---
 
-## 📌 다음에 해야 할 것 (2026-09-17 기준)
+## 📌 다음에 해야 할 것 (2026-09-18 기준)
 
 > 손대기 전에 `ISSUES.md`(호윤이 COMET 에 던져둔 문제)와 `작업 유의사항.md` 먼저.
 > ★모델 호출을 새로 만들면 `think=False` — 안 주면 빈 답이 난다(유의사항 1번).
+> ★코드를 고치면 **데몬 재시작**이 있어야 반영된다 — 끄는 건 호윤이(유의사항 '데몬은 재시작하기 전까지').
+
+A. **9/17~18 에 새로 붙인 것들을 호윤이 쓰면서 나오는 지적 받기** — 지금 데몬은 전부 켠 상태로 돌고 있다.
+   - Alt 두 번 말걸기 창(`ask_box.py`): 포커스를 실제로 가져오는지, 3초 자동 전송이 성급하지 않은지.
+     음성인식이 또 틀리면 `talk.log` 의 `last_stats`·받아쓴 문장부터. (turbo 는 호윤 마이크로 비교 안 했다)
+   - 클로드+아스트라 회의(`debate.py`): 의견 질문 자동 감지(`OPINION_ASK`)가 너무 자주 걸리면 조건을 좁힌다.
+     실제 Alt 두 번 → 의견 질문 → 회의까지 이어서는 안 돌려봤다.
+   - 덕킹: 호윤이 덕킹 중 직접 볼륨을 바꾸는 경우는 코드만 있고 실측 없음.
+   - 이슈 알림: 지금 **AI 보통 · 경제 보통 · 2분마다**. 블루스카이 가산점이 실제로 붙는지는 `알림 기록` 의 why 로.
+B. **이슈 중복 판정이 느슨하다** — `_similar` 가 세 단어만 겹쳐도 같은 사건. 다른 사건이 "이미 알린 것"으로 묻힐 수 있다.
+   고친다면 실제 `issues_seen.json` 으로 오판 목록부터 뽑아볼 것(9/17 반복 알림은 비교 방식만 고침).
+C. **정리 대기(호윤 답 없음)** — 바탕화면 `목소리후보\`(후보 wav 17개), `A.B.B.Y.S\supertonic\`(396MB) 지울지.
+D. **공개 저장소 푸시 보류 중** — 코드에 `MR.AiCE`·`IN-POS` 가 박혀 있다(호윤 결정 대기). 커밋은 계속 쌓이는 중.
 
 0. **할일·일정 창구를 호윤이 실제로 써보기** (9/17 신설, `todo_box.py`). DB 가 사실상 비어 있어
    아침 푸시가 조용하다 — `할일 RawCut 납품본 내일 3시까지` 식으로 몇 개 넣어야 돈다.
@@ -20,9 +33,7 @@ A.B.B.Y.S 프로젝트의 두뇌 레이어 (VOID의 형제).
    텔레그램 + 화면 배너 + 음성으로 나간다(소리 끄기 = `brief.todo_speak=false`).
    현재 상태는 `TODO.md`(자동 생성)를 열면 바로 보인다 — **프로젝트 손대기 전에 여기부터.**
    명령·모델 경로 둘 다 라이브 확인됨. 남은 확인은 **폰(Tailscale) 경유**뿐.
-1. **이슈 알림 배너를 호윤이 눈으로 확인.** 9/15 에 실제 기사로 배너+음성을 한 번 띄웠고 에러는 없었지만
-   화면에서 어떻게 보이는지(위치·크기·읽는 속도)는 못 봤다. 거슬리면 `toast.py` 상단 상수(W·RADIUS·색).
-   알림은 **꺼진 상태** — 켜기는 `알림 ai 굵직` / `알림 경제 굵직`.
+1. ~~이슈 알림 배너 눈으로 확인~~ — 9/17 에 켜서 호윤이 실제로 받고 있다(반복·내용 없음·칼럼 지적 → 고침).
 2. **구글 할 일 켜기 — 호윤이 해야 할 5단계.** 코드(`gtasks.py`)는 9/17 에 다 짜뒀고 가짜 데이터로
    검증까지 했다. **실계정으로는 안 돌려봤다**(키가 없어서). COMET 에 `할일 구글` 치면 이 안내가 나온다:
    ① console.cloud.google.com 프로젝트 + **Tasks API 사용 설정** ② OAuth 동의화면 = 외부 + **게시(프로덕션)**
@@ -47,11 +58,29 @@ A.B.B.Y.S 프로젝트의 두뇌 레이어 (VOID의 형제).
    직답 경로가 PERSONA 를 안 거침(이모지·영어). ★절단을 그냥 풀면 안 됨 — 컨텍스트↑=느려짐/대화감↓(호윤).
 7. **데몬 원격(폰) 접속 확인.** 9/17 에 데몬은 새 코드로 재시작해 돌고 있고 로컬 `/chat` 은 확인했다.
    아직 안 한 것 = **Tailscale 경유 폰 접속**(8/30 `local_config.json` 허용계정 변경 이후 한 번도 안 봄).
-8. `cloud.py` 기본 모델이 `claude-opus-4-8`(구세대). 두뇌를 클라우드로 올릴 거면 CLI 방식(구독)도 검토 —
-   다른 프로젝트의 `claude_cli.py` 어댑터에 선례(ANTHROPIC_API_KEY 제거·`--bare` 금지).
+8. `cloud.py` 기본 모델이 `claude-opus-4-8`(구세대). 두뇌를 클라우드로 올릴 거면 CLI 방식(구독) —
+   **이제 `debate.py` 의 `ask_claude`/`ask_astra` 가 선례**(ANTHROPIC_API_KEY 제거·`--bare` 금지·임시 cwd).
 
 ※ 9/15 상세(빈 답 원인·실측·헛짚은 것)는 `logs/2026-09-15-log.md`,
-9/17 상세(할일 창구·아침 푸시·캘린더 접은 경위)는 `logs/2026-09-17-log.md`.
+9/17 상세(할일 창구·아침 푸시·캘린더 접은 경위 + 저녁의 아야카·알림)는 `logs/2026-09-17-log.md`,
+9/18 상세(숫자 읽기·말걸기 창·STT 비교·덕킹·회의)는 `logs/2026-09-18-log.md`.
+
+## ✅ 2026-09-17~18 — 목소리·말걸기·이슈 알림·회의
+- **목소리 = 아야카**(GPT-SoVITS v2Pro 파인튜닝, 저장소 밖 `A.B.B.Y.S\gpt-sovits\`). `voice.py` 가 api_v2 서버
+  (127.0.0.1:9880)를 부르고, 없으면 창 없이 띄운 뒤 그 말은 Edge 로. 음량 0.19(×1.7 아야카 보정).
+  숫자는 `speak_numbers()` 로 한글화해서 보낸다(이점팔퍼센트). 말할 때 화면 형체 `orb.py`.
+- **이슈 알림** — `알림 켜/끔`, `알림 주기 N`(기본 2분), 강도 `알림 ai|경제 굵직|보통|전부|끔`.
+  소스에서 레딧을 빼고 **블루스카이 검색**(분야별 10분 1회, 403 이면 1시간 쉼). 알릴 기사는 원문 요약을 가져와
+  **제목 + 내용 1~2문장**으로 읽고, 여러 건은 "먼저/다음은/마지막으로". 칼럼·질문형 제목은 굵직 아니면 잔잔.
+  `뉴스`(또는 "새로운 뉴스 없어", "한국 뉴스 알려줘") = 지금 뜬 것 모아보기, `알림 다시 [n]` = 최근 알림 다시 듣기.
+- **말걸기 = 왼쪽 Alt 두 번** (`자율모드 talk 켜/꺼`). 화면 위 창(`ask_box.py`)이 뜨고 바로 듣는다.
+  키를 누르면 입력 모드, 멈추고 3초 뒤 자동 전송(Enter 즉시, Esc 닫기), 6초 무응답이면 닫힘.
+  STT = Whisper **turbo**(GPU 반정밀도 1.5GB, 데몬 뜰 때 미리 올림). 진행 기록 `talk.log`.
+- **덕킹** — 코멧이 말할 때·내가 말할 때 다른 앱 볼륨 20%(pycaw). 끄려면 `voice.DUCK=False`.
+  죽은 채 줄어 있으면 데몬 시작 때 `duck_state.json` 으로 되돌림.
+- **회의 = 클로드 + 아스트라**(`debate.py`, 구독 CLI). `회의 <주제>` 또는 의견 질문("어떻게 생각해/뭐가 나아/~해야 할까")
+  → 뒤에서 각자 입장 → 서로 반박 → 결론, 끝나면 배너+음성. 전문 `회의 결과`. 옛 로컬 회의 `로컬 회의 <주제>`.
+  실측 64초. 도는 중에도 다른 말(의견 질문 포함)은 평소대로 답한다.
 
 ## ✅ 2026-09-17 — 할일·일정 창구 + 아침에 읊어주기
 - **`todo_box.py` 신설.** `할일 RawCut 납품본 내일 3시까지` 한 줄이면 **프로젝트와 마감을 알아서 뗀다.**
@@ -253,7 +282,11 @@ COMET이 문지기 호출부터 죽었다(`comet.py`의 `_gen()`은 `llm.py`와 
 
 ## 파일 구성
 - `comet.py` — 본체(라우터·페르소나·대화·도구 분기·화면 분기). 진입점.
-- `voice.py` — 듣기(Whisper STT, 로컬 CPU) / 말하기(Edge-TTS InJoon). `synth_mp3()`=데몬용 mp3 바이트.
+- `voice.py` — 듣기(Whisper **turbo**, GPU 반정밀도) / 말하기(**아야카** GPT-SoVITS 서버, 없으면 Edge-TTS). `speak_numbers()` 숫자 한글화, `ducker` 다른 앱 볼륨 낮추기, `synth_mp3()`=데몬(폰)용 mp3 바이트(Edge 그대로).
+- `ask_box.py` — Alt 두 번 말걸기 창(tk, 별도 프로세스). 데몬과 임시폴더 파일로 주고받음.
+- `orb.py` — 말할 때 화면 형체(소리 포락선에 맞춰 움직임). `toast.py` — 화면 위 알약 배너.
+- `issues.py` — 이슈 알림(수집→강도→기사 내용→배너+음성), `news_digest`·`replay`. `python issues.py --sources` 소스 점검.
+- `debate.py` — 클로드+아스트라 회의(구독 CLI). 마지막 결과 `debate_last.json`.
 - `memory_db.py` — 장기기억 SQLite(`comet_memory.db`). 도구: remember/recall/list_todos/complete_todo.
 - `files.py` — 파일/폴더 읽기(읽기전용): list_dir/read_file/search_files. 한국어 경로 별칭 해석.
 - `projects.py` — 코인봇/주식봇 거래 CSV 통계(승률·손익). trade_stats/list_sources.
@@ -267,7 +300,7 @@ COMET이 문지기 호출부터 죽었다(`comet.py`의 `_gen()`은 `llm.py`와 
 - `analyst.py` — **종목·테마 분석 브레인(2패스 이중판단).** **(2026-06-28 소스 교체: gather()의 1차 근거가 덕덕고 다국어 → `finance_news`(금융 RSS). 덕덕고 다국어는 금융RSS가 텅 빌 때만 폴백.)** 수집(티커감지→Yahoo 1년일봉 실계산 52주·수익률·이평선 + **다국어 수집**: _plan_languages가 종목 공급망·시장 엮인 나라 2~3곳 골라 현지어 쿼리 생성[엔비디아→미국en·중국zh·한국ko]→나라별 web.research→도메인 중복제거. 영중일 검색이 fool.com·investing.com 등 진짜 금융매체를 끌어와 출처품질↑[한국검색만 하면 죄다 블로그]) → ①컨센서스 분석가(시장 다수의견+2차파급효과 지도) → ②역발상 검증관(컨센서스 역심리 + **1차의 미근거 수치 적발=할루시네이션 차단** + ✅확인/🤔추론/❓미확인 분리 최종콜). 가격은 파이썬이 직접 박아 그라운딩 보장. web.py+prices.py 재활용, 의존성 추가 0. 도구: analyze_stock. (Only Money 9단 파이프라인 사상의 로컬 압축판)
 - `news.py` / `notify.py` — 뉴스 감시(구글뉴스 RSS, 날짜순) + **텔레그램** 푸시(send/format_digest). **2026-06-24 chat_id 연결 완료**(봇 @<봇핸들>, chat_id <chat_id>). 상시 스케줄러 = autonomy proactive.
 - `market_brief.py` — **일일 미국 증시 브리핑 생성기(좁게: 지수·반도체·특징주).** 숫자=prices(Yahoo 실측, 날조0), 사건=구글뉴스 RSS(최근 FRESH_DAYS=2일·날짜필터로 stale 차단), 종합·해석=27b 2패스(①종합 ②사실감사). gather()→generate(). proactive가 미장 마감 후 호출 예정(아직 미연결). ⚠️숫자 그라운딩 검증됨. 해석 깊이는 튜닝 중(사건 소스를 DuckDuckGo→뉴스RSS로 바꿔 stale 9월블로그 섞이던 문제 해결).
-- `autonomy.py` — **자율/상주 모드 레이어(comet 비대화 격리).** 모드=스레드+예외격리+가용성게이트. `ProactiveMode`(news.collect→판단게이트→notify.send, 모델0) · `WakeMode`(openwakeword 상시대기→voice STT→respond, 엔진없으면 available()=False). `Autonomy` 컨트롤러=enable/disable/status/restore + '자율모드 …' 명령 파서. 설정 autonomy_config.json. comet.py 가 `self.autonomy`로 생성·복원·토글만.
+- `autonomy.py` — **자율/상주 모드 레이어(comet 비대화 격리).** 모드=스레드+예외격리+가용성게이트. `ProactiveMode`(news.collect→판단게이트→notify.send, 모델0) · `WakeMode`(openwakeword 상시대기→voice STT→respond, 엔진없으면 available()=False) · `IssuesMode`(이슈 알림) · `TalkMode`(Alt 두 번 → ask_box 창, 저수준 키보드 훅). `Autonomy` 컨트롤러=enable/disable/status/restore + '자율모드 …' 명령 파서. 설정 autonomy_config.json. comet.py 가 `self.autonomy`로 생성·복원·토글만.
 - `cloud.py` — **클라우드 두뇌(멀티 프로바이더): 클로드(`/v1/messages`)·GPT·OpenAI호환.** 메인 대화 최종 답변만 클라우드로(로컬 기본·키 없으면 폴백). cost_guard 검문. `chat()`이 ollama와 동형 반환. 설정 cloud_config.json(모델), 키=환경변수 또는 cloud_keys.json(런타임 `키 클로드 …`로 재시작 없이 교체).
 - `kr_stocks.py` — **한국 종목 이름/코드 → .KS(코스피)/.KQ(코스닥) 공용 해석.** analyst·prices 단일 출처(NAME2TICKER_KR + name_to_ticker + is_bare_code).
 - `daemon.py` — HTTP 서버(상주). GET / = 폰 웹UI, POST /chat, POST /tts, POST /imgsearch.
@@ -310,7 +343,7 @@ COMET이 문지기 호출부터 죽었다(`comet.py`의 `_gen()`은 `llm.py`와 
 - **profile 정적 스냅샷:** 내 메모리 갱신돼도 자동 동기화 안 됨 → `profile/`에 .md 재복사 필요.
 - **화면인식:** light(gemma4:12b)라 디테일 한계. 정밀히 = `vision.py`의 `VISION_MODEL`을 gemma4:26b로.
 - **CLI/컴퓨터 제어:** 호윤이 "에바"라며 보류. 안 만듦.
-- torch가 CPU 빌드(CUDA False) — Whisper STT는 CPU. 로컬 XTTS 목소리복제 하려면 Blackwell CUDA 먼저 고쳐야.
+- torch 는 이제 cu130 빌드(CUDA True, 2026-09 확인) — Whisper 는 GPU. faster-whisper CUDA 는 `cublas64_12.dll` 없어 안 됨(CPU int8 만).
 
 ## 다음 후보
 
@@ -327,7 +360,8 @@ COMET이 문지기 호출부터 죽었다(`comet.py`의 `_gen()`은 `llm.py`와 
 
 ## 기록
 
-- `logs/2026-09-17-log.md` — 할일·일정 창구(todo_box) 신설, 아침 푸시 게이트 분리, 캘린더/Tasks 접은 경위
+- `logs/2026-09-18-log.md` — 숫자 읽기, 말걸기 창(타이핑), STT turbo 비교, 뉴스 말로 묻기, 덕킹, 클로드+아스트라 회의
+- `logs/2026-09-17-log.md` — 할일·일정 창구(todo_box) 신설, 아침 푸시 게이트 분리, 캘린더/Tasks 접은 경위 + 저녁: 아야카 목소리·형체·이슈 알림(블루스카이·반복 버그·기사 내용)
 - `logs/2026-09-15-log.md` — 빈 답 원인(reasoning 사고 토큰) 수정, analyst·vision 사고 끔, 브리핑 경로, 이슈 알림·접수함
 - `logs/2026-08-31-log.md`
 - `logs/2026-08-30-log.md` — local_config 분리

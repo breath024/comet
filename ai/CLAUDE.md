@@ -31,7 +31,10 @@
 | `issue_box.py` | 이슈 접수함 — memory 테이블 kind='issue', 바뀔 때마다 `ISSUES.md` 로 내보냄 |
 | `todo_box.py` | 할일·일정 창구 — memory 테이블 kind='todo' + `due`·`src` 컬럼. `할일 …`/`일정` 명령(모델 안 거침), 프로젝트 자동 태깅, 바뀌면 `TODO.md` 내보냄, 아침 읊기 `digest()`/`speech()` |
 | `gtasks.py` | 구글 할 일 → COMET 가져오기(읽기전용 한 방향, OAuth). `할일 구글연결` 1회 → `할일 가져오기`. ※구글 할 일엔 시각이 없다 |
-| `daemon.py` | 상주 서버 (HTTPS, 폰 웹UI 음성) |
+| `daemon.py` | 상주 서버 (HTTPS, 폰 웹UI 음성). ★코드 고치면 재시작해야 반영 — 끄는 건 호윤이 창을 닫아서 |
+| `voice.py` | 말하기 = 아야카(GPT-SoVITS 서버, `../../gpt-sovits`) / 듣기 = Whisper turbo(GPU). 숫자 한글화 `speak_numbers`, 덕킹 `ducker` |
+| `ask_box.py` | Alt 두 번 말걸기 창 (말 또는 타이핑, 멈추면 3초 뒤 전송). 흐름은 `autonomy.TalkMode`, 기록 `talk.log` |
+| `debate.py` | 회의 = 클로드(`claude -p`) + 아스트라(`codex exec`) 구독 CLI. 각자 입장 → 반박 → 결론. `회의 <주제>`·의견 질문 |
 | `coder_bridge.py` | "코딩 @폴더 /스킬 할일" 명령 → 코딩 에이전트 |
 | `council.py` | "회의 주제" 명령 → 다중 에이전트 토론 |
 
