@@ -58,6 +58,68 @@ def clean_for_speech(text: str) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════
+#  숫자 → 한글 읽기 (아야카용)
+#   GPT-SoVITS 한국어 g2p 는 소수점·%·~ 를 제대로 못 읽는다 — "2.8%" 가 "이-" 로 나왔다(2026-09-18).
+#   게다가 clean_for_speech 가 ~ · - 를 지우므로 그 전에 바꿔야 한다.
+#   개수 단위(건·개·명…)는 고유어로 — "4건"을 "사건"으로 읽으면 事件 으로 들린다.
+# ═══════════════════════════════════════════════════════════════
+_SINO = "영일이삼사오육칠팔구"
+_NATIVE_1 = ["", "한", "두", "세", "네", "다섯", "여섯", "일곱", "여덟", "아홉"]
+_NATIVE_10 = ["", "열", "스물", "서른", "마흔", "쉰", "예순", "일흔", "여든", "아흔"]
+_COUNTERS = ("건", "개", "명", "시간", "시", "살", "번", "가지", "곳", "마리", "달", "군데", "사람", "대")
+
+
+def _sino(n: int) -> str:
+    if n == 0:
+        return "영"
+    units = ["", "십", "백", "천"]
+    big = ["", "만", "억", "조", "경"]
+    out, gi = [], 0
+    while n > 0:
+        chunk, n = n % 10000, n // 10000
+        if chunk:
+            s = ""
+            for i in range(3, -1, -1):
+                d = chunk // (10 ** i) % 10
+                if d:
+                    s += ("" if d == 1 and i > 0 else _SINO[d]) + units[i]
+            if gi == 1 and s == "일":       # 10000 → 만 (일만 아님)
+                s = ""
+            out.append(s + big[gi])
+        gi += 1
+    return "".join(reversed(out))
+
+
+def _native(n: int) -> str:
+    if n == 20:
+        return "스무"
+    return _NATIVE_10[n // 10] + _NATIVE_1[n % 10]
+
+
+def _read_int(digits: str, after: str) -> str:
+    n = int(digits)
+    if 0 < n < 100 and after.startswith(_COUNTERS) and not after.startswith(("개월", "대비", "달러")):
+        return _native(n)
+    return _sino(n)
+
+
+def speak_numbers(text: str) -> str:
+    t = re.sub(r"(?<=\d),(?=\d{3})", "", text)                         # 1,500 → 1500
+    t = re.sub(r"(\d)\s*[~〜]\s*(?=[+\-]?\d)", r"\1에서 ", t)            # 3~4 → 3에서 4
+    t = re.sub(r"(?:(?<=^)|(?<=[\s(]))\+(?=\d)", "플러스 ", t)
+    t = re.sub(r"(?:(?<=^)|(?<=[\s(]))[-−](?=\d)", "마이너스 ", t)
+    t = re.sub(r"\$\s?(\d[\d.]*)", r"\1달러", t)
+    t = re.sub(r"%\s?p\b|%\s?포인트", " 퍼센트포인트", t)
+    t = t.replace("%", " 퍼센트")
+
+    def dec(m):
+        return _sino(int(m.group(1))) + " 점 " + "".join(_SINO[int(c)] for c in m.group(2))
+    t = re.sub(r"(\d+)\.(\d+)", dec, t)
+    t = re.sub(r"\d+", lambda m: _read_int(m.group(), t[m.end():m.end() + 2].lstrip()), t)
+    return t
+
+
+# ═══════════════════════════════════════════════════════════════
 #  Mouth — Edge-TTS
 # ═══════════════════════════════════════════════════════════════
 def synth_mp3(text: str, voice: str = TTS_VOICE, rate: str = TTS_RATE) -> bytes:
@@ -173,6 +235,8 @@ class Mouth:
         self.gain  = gain
 
     def speak(self, text: str):
+        if TTS_ENGINE == "ayaka":
+            text = speak_numbers(text)       # clean_for_speech 가 ~·- 를 지우기 전에
         clean = clean_for_speech(text)
         if not clean:
             return
