@@ -238,6 +238,29 @@ def _load_static():
 STATIC = _load_static()
 
 
+_speak_lock = threading.Lock()
+
+
+def _speak_async(text):
+    """대답을 소리로 읽어준다 — 별도 스레드.
+
+    ★HTTP 응답 안에서 읽으면 재생이 끝날 때까지 대화창에 글자가 안 뜬다(아야카 합성 2초 +
+    재생 수 초). 그래서 글자를 먼저 보내고 여기서 읽는다. Mouth 는 콘솔·Alt 말걸기와
+    같은 것을 쓴다(덕킹·형체·중단이 한 곳에서 돌게). 두 답이 겹쳐 읽히지 않게 잠근다.
+    """
+    if not text or text.startswith("[오류]"):
+        return
+
+    def run():
+        with _speak_lock:
+            try:
+                _comet._get_mouth().speak(text)
+            except Exception as e:
+                print(f"  [대화창 음성 오류] {e}")
+
+    threading.Thread(target=run, daemon=True).start()
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send(self, code, body, ctype="application/json"):
         data = body.encode("utf-8")
@@ -290,7 +313,9 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             length = int(self.headers.get("Content-Length", 0))
-            text = json.loads(self.rfile.read(length).decode("utf-8")).get("text", "").strip()
+            _body = json.loads(self.rfile.read(length).decode("utf-8"))
+            text = (_body.get("text") or "").strip()
+            want_speak = bool(_body.get("speak"))     # PC 대화창만 보낸다(폰은 /tts 로 따로)
         except Exception:
             self._send(400, json.dumps({"error": "bad request"}))
             return
@@ -317,6 +342,8 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 reply = f"[오류] {e}"
         self._send(200, json.dumps({"reply": reply}, ensure_ascii=False))
+        if want_speak:
+            _speak_async(reply)        # 글자를 먼저 보내고, 읽기는 뒤에서
 
     def _handle_imgsearch(self):
         try:
