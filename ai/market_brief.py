@@ -193,8 +193,39 @@ AUDIT_SYS = (
     "- 형식·이모지·길이는 유지. 감사 코멘트 없이 다듬어진 최종 브리핑만 출력.")
 
 
-def generate(model=BRIEF_MODEL, verbose=False):
-    """수집 → 종합(1차) → 사실감사(2차) → 최종 브리핑 텍스트."""
+# ── 바쁠 때 우회하는 두뇌 = 호윤 구독 CLI(클로드 → 아스트라) ─────
+#  API 키가 아니라 구독 CLI 를 부른다(debate.py 와 같은 통로) = 추가 과금 0, GPU 0.
+#  ★로컬은 2패스(종합 → 사실감사)인데 감사 패스는 '로컬 모델이 숫자를 지어내는 것'을 잡으려고
+#    둔 것이다. 클로드·아스트라는 한 번 부르는 데 30초~1분씩 걸리므로 감사 규칙을 종합 지침에
+#    얹어 1패스로 끝낸다. 숫자는 어차피 [근거]에 Yahoo 실측이 리터럴로 박혀 있다.
+CLOUD_SYS = (SYNTH_SYS + "\n[쓰고 나서 스스로 감사]\n"
+             + "\n".join(AUDIT_SYS.splitlines()[1:])
+             + "\n감사 코멘트 없이 다듬어진 최종 브리핑만 출력.")
+
+
+def _cloud_brief(evidence, log=None):
+    """구독 CLI로 브리핑 생성 → (텍스트, 두뇌이름). 둘 다 실패하면 ('', '')."""
+    import debate                       # ask_claude / ask_astra (ANTHROPIC_API_KEY 제거된 자식 환경)
+    prompt = CLOUD_SYS + "\n\n[근거]\n" + evidence
+    for who, ask in (("클로드", debate.ask_claude), ("아스트라", debate.ask_astra)):
+        try:
+            out = _strip_think(ask(prompt))
+            if out:
+                return out, who
+            if log:
+                log(f"[brief] {who} 빈 응답 — 다음 두뇌로")
+        except Exception as e:
+            if log:
+                log(f"[brief] {who} 실패: {str(e)[:150]}")
+    return "", ""
+
+
+def generate(model=BRIEF_MODEL, verbose=False, via="local", log=None):
+    """수집 → 종합(1차) → 사실감사(2차) → 최종 브리핑 텍스트.
+
+    via="cloud" 면 로컬 27b 대신 구독 CLI(클로드→아스트라)로 1패스 생성한다.
+    GPU 가 게임 등으로 바쁠 때 브리핑을 미루지 않고 그냥 내보내려는 우회로.
+    """
     idx_lines, mov_lines, news_items, web_sources, sentiment = gather()
     if not idx_lines and not mov_lines:
         return {"ok": False, "msg": "시세 수집 실패 — 브리핑 보류(잠시 후 재시도)"}
@@ -202,6 +233,17 @@ def generate(model=BRIEF_MODEL, verbose=False):
     evidence = _evidence(idx_lines, mov_lines, news_items, web_sources, sentiment, today)
     if verbose:
         print(evidence, "\n", "=" * 40)
+
+    if via == "cloud":
+        final, brain = _cloud_brief(evidence, log)
+        if not final:
+            return {"ok": False, "msg": "클라우드 두뇌(클로드·아스트라) 둘 다 실패 — 다음 점검 재시도"}
+        footer = (f"\n\n🔗 기사 {len(news_items)}건"
+                  + (f"(+웹 {len(web_sources)})" if web_sources else "")
+                  + f" · 숫자=Yahoo 실측 · 두뇌={brain} · {today}")
+        return {"ok": True, "text": final + footer, "news": news_items,
+                "web": web_sources, "indices": idx_lines, "movers": mov_lines, "brain": brain}
+
     try:
         r1 = _AC.chat(model=model, keep_alive="2m",
                       options={"temperature": 0.2, "num_predict": 2000},
@@ -223,9 +265,9 @@ def generate(model=BRIEF_MODEL, verbose=False):
         final = draft        # 감사 실패해도 1차 초안은 살림
     footer = (f"\n\n🔗 기사 {len(news_items)}건"
               + (f"(+웹 {len(web_sources)})" if web_sources else "")
-              + f" · 숫자=Yahoo 실측 · {today}")
+              + f" · 숫자=Yahoo 실측 · 두뇌=로컬 · {today}")
     return {"ok": True, "text": final + footer, "news": news_items,
-            "web": web_sources, "indices": idx_lines, "movers": mov_lines}
+            "web": web_sources, "indices": idx_lines, "movers": mov_lines, "brain": "로컬"}
 
 
 if __name__ == "__main__":

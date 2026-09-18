@@ -8,7 +8,8 @@
 #                 모델 호출 0 = GPU 안 씀(게임 중에도 안 끊김).
 #   · brief     : 매일 아침(미장 마감 후) 미국 증시 일일 브리핑 → 텔레그램 푸시.
 #                 조각 재활용: market_brief.generate + notify.send. 27b(무거움)라
-#                 GPU 가 게임 등으로 바쁘면 미룬다(하루 1회라 급할 것 없음).
+#                 GPU 가 게임 등으로 바쁘면 구독 CLI(클로드→아스트라)로 우회해서 그냥 보낸다
+#                 (2026-09-18 전까지는 미뤘다 — 바쁜 날은 브리핑이 아예 안 왔음).
 #   · wake      : '코멧' 깨우는 말 상시 대기 → 들으면 응답 ("부르면 듣기").
 #                 wake-word 엔진(openwakeword) 필요 — 없으면 available()=False.
 #
@@ -160,7 +161,7 @@ class ProactiveMode(_Mode):
 # ═══════════════════════════════════════════════════════════════
 class BriefMode(_Mode):
     name = "brief"
-    desc = "매일 아침 미증시 브리핑을 폰으로 (GPU 한가할 때, 게임 중이면 미룸)"
+    desc = "매일 아침 미증시 브리핑을 폰으로 (GPU 바쁘면 클로드·아스트라로 우회)"
 
     def __init__(self, cfg, log, gpu_busy_fn=None, save_fn=None):
         super().__init__(cfg, log)
@@ -236,7 +237,7 @@ class BriefMode(_Mode):
         from datetime import datetime
         hour = int(self.cfg.get("hour", 7))
         check = max(60, int(self.cfg.get("check_sec", 600)))
-        self.log(f"[brief] 가동 — 매일 {hour}시 이후 미증시 브리핑(27b, GPU 한가할 때)")
+        self.log(f"[brief] 가동 — 매일 {hour}시 이후 미증시 브리핑(27b, 바쁘면 클라우드 우회)")
         while not self._stop.wait(check):
             try:
                 today = self._today()
@@ -246,17 +247,21 @@ class BriefMode(_Mode):
                     continue                         # 오늘 이미 보냄
                 if datetime.now().hour < hour:
                     continue                         # 아직 이른 시각
-                # GPU 양보: 게임 등으로 바쁘면 미룬다(다음 점검에 재시도)
+                # GPU 양보: 게임 등으로 바쁘면 로컬 27b 대신 구독 CLI(클로드→아스트라)로 우회한다.
+                #  ★예전엔 미루기만 했다 — 바쁜 날은 브리핑이 아예 안 왔다. 호윤: "사실상 로컬로만
+                #    돌아가지 않아도 괜찮음"(2026-09-18). 클라우드도 실패하면 그때는 미룬다.
+                via = "local"
                 if self.gpu_busy_fn:
                     busy, info = self.gpu_busy_fn()
                     if busy:
-                        self.log(f"[brief] GPU 바쁨({info}) — 브리핑 미룸(다음 점검 재시도)")
-                        continue
+                        via = "cloud"
+                        self.log(f"[brief] GPU 바쁨({info}) — 클라우드 두뇌로 우회")
                 if not notify.configured():
                     self.log("[brief] 텔레그램 미설정 — 브리핑 보류")
                     continue
-                self.log("[brief] 미증시 브리핑 생성 중(27b)…")
-                r = market_brief.generate()
+                self.log("[brief] 미증시 브리핑 생성 중"
+                         + ("(클로드/아스트라)…" if via == "cloud" else "(27b)…"))
+                r = market_brief.generate(via=via, log=self.log)
                 if not r.get("ok"):
                     self.log(f"[brief] 생성 실패: {r.get('msg')} — 다음 점검 재시도")
                     continue
