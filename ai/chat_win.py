@@ -18,7 +18,7 @@ import threading
 import urllib.error
 import urllib.request
 
-from PySide6.QtCore import Qt, QObject, Signal, QTimer
+from PySide6.QtCore import Qt, QObject, QSize, Signal, QTimer
 from PySide6.QtGui import QFont, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLabel,
                                QPushButton, QScrollArea, QSizePolicy,
@@ -88,6 +88,44 @@ def _backlog():
 
 class Bridge(QObject):
     done = Signal(bool, object)
+
+
+class Bubble(QLabel):
+    """말풍선.
+
+    ★줄바꿈(wordWrap) 라벨을 그냥 세로 Preferred 로 두면 레이아웃이 sizeHint 밑으로
+    눌러서 **긴 답의 아랫줄이 잘린다**(실측: 필요 213px 인데 153px 만 받음).
+    세로를 Minimum + heightForWidth 로 잡아 '이 너비에서 필요한 높이'를 바닥으로 만든다.
+    """
+
+    def __init__(self, text):
+        super().__init__(text)
+        self.setWordWrap(True)
+        self.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.setFont(QFont("Malgun Gothic", 10))
+        sp = QSizePolicy(QSizePolicy.Maximum, QSizePolicy.Minimum)
+        sp.setHeightForWidth(True)
+        self.setSizePolicy(sp)
+
+    def _need(self):
+        w = self.width() or min(self.maximumWidth(), self.sizeHint().width())
+        return self.heightForWidth(w) if w > 0 else self.sizeHint().height()
+
+    def minimumSizeHint(self):
+        return QSize(0, self._need())
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self.setMinimumHeight(self._need())      # 창 너비가 바뀌어도 다시 잡는다
+
+    def setMaximumWidth(self, w):
+        super().setMaximumWidth(w)
+        self.updateGeometry()
+
+    def setText(self, t):
+        super().setText(t)                       # '…' 를 긴 대답으로 갈아끼울 때
+        self.setMinimumHeight(self._need())      # 옛 한 줄 높이에 갇히지 않게 다시 잰다
+        self.updateGeometry()
 
 
 class Input(QTextEdit):
@@ -196,12 +234,8 @@ class ChatWindow(QWidget):
 
     # ── 화면 ──
     def _bubble(self, text, who):
-        lab = QLabel(text)
-        lab.setWordWrap(True)
-        lab.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        lab.setFont(QFont("Malgun Gothic", 10))
+        lab = Bubble(text)
         lab.setMaximumWidth(int(self.width() * BUBBLE_MAX))
-        lab.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
         if who == "me":
             lab.setStyleSheet(f"background:{ME}; color:#fff; padding:9px 12px;"
                               "border-radius:14px; border-bottom-right-radius:4px;")
