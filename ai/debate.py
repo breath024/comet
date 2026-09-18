@@ -53,11 +53,16 @@ def _flags():
     return getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
-def ask_claude(prompt, timeout=300):
+def ask_claude(prompt, timeout=300, tools=""):
+    """tools="" 면 도구를 다 끈다(회의용). "WebSearch" 처럼 주면 그것만 열린다.
+       ★--tools 로 열기만 하면 비대화형에선 권한이 거부돼 빈손으로 돌아온다(실측) —
+         --allowed-tools 로 미리 허락까지 같이 줘야 실제로 검색한다."""
     exe = shutil.which("claude") or os.path.expanduser(r"~\.local\bin\claude.exe")
+    args = [exe, "-p", "--no-session-persistence", "--output-format", "text", "--tools", tools]
+    if tools:
+        args += ["--allowed-tools", tools]
     with tempfile.TemporaryDirectory(prefix="comet_claude_") as cwd:   # 프로젝트 CLAUDE.md 안 끌려오게
-        r = subprocess.run([exe, "-p", "--no-session-persistence", "--output-format", "text",
-                            "--tools", ""],
+        r = subprocess.run(args,
                            input=prompt.encode("utf-8"), capture_output=True, cwd=cwd,
                            env=_child_env(), timeout=timeout, creationflags=_flags())
     out = r.stdout.decode("utf-8", "ignore").strip()
@@ -67,13 +72,16 @@ def ask_claude(prompt, timeout=300):
     return out
 
 
-def ask_astra(prompt, timeout=420):
+def ask_astra(prompt, timeout=420, web=False):
+    """web=True 면 웹 검색을 켠다(codex 는 플래그가 아니라 설정값으로 켠다)."""
     exe = shutil.which("codex") or os.path.expanduser(
         r"~\AppData\Local\Programs\OpenAI\Codex\bin\codex.exe")
     with tempfile.TemporaryDirectory(prefix="comet_astra_") as cwd:
         out_file = os.path.join(cwd, "out.md")
-        r = subprocess.run([exe, "exec", "-m", ASTRA_MODEL, "--sandbox", "read-only",
-                            "--skip-git-repo-check", "-o", out_file, "-"],
+        args = [exe, "exec", "-m", ASTRA_MODEL, "--sandbox", "read-only", "--skip-git-repo-check"]
+        if web:
+            args += ["-c", "tools.web_search=true"]
+        r = subprocess.run(args + ["-o", out_file, "-"],
                            input=prompt.encode("utf-8"), capture_output=True, cwd=cwd,
                            env=_child_env(), timeout=timeout, creationflags=_flags())
         text = ""

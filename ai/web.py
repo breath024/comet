@@ -213,8 +213,62 @@ def _brave_search(query, n, kl):
     return {"ok": True, "query": query, "results": results}
 
 
+# ── 구독 CLI 우회 ───────────────────────────────────────────────
+#  2026-09-18 실측: DDG·Mojeek 봇차단, Startpage 챌린지, Ecosia 403, Brave 429,
+#  Bing 은 200 인데 질의와 무관한 결과를 준다. 키 없이 긁는 길이 사실상 다 막혔다.
+#  그래서 브리핑의 클라우드 우회와 같은 배선을 쓴다 — 호윤 구독의 CLI 에게 대신 찾게 한다.
+#  ★느리다(실측 클로드 23초 · 아스트라 27초). 그래서 '막혔을 때만' 내려온다.
+CLI_SEARCH_PROMPT = (
+    "웹을 검색해서 아래 질문에 해당하는 실제 출처 {n}개를 찾아라.\n"
+    "질문: {q}\n\n"
+    "오직 JSON 배열만 출력해라. 설명·머리말·코드펜스 금지.\n"
+    '형식: [{{"title":"제목","url":"https://...","snippet":"한두 문장 요약"}}]\n'
+    "url 은 검색으로 실제 확인한 주소여야 한다. 지어내지 마라. 못 찾으면 [] 만 출력.\n"
+    "요약은 한국어로.")
+
+
+def _json_array(text):
+    """CLI 가 코드펜스나 잡담을 섞어 보내도 JSON 배열만 건져낸다."""
+    t = re.sub(r"^```[a-z]*\s*|\s*```$", "", (text or "").strip(), flags=re.M)
+    i, j = t.find("["), t.rfind("]")
+    if i < 0 or j <= i:
+        return []
+    try:
+        data = json.loads(t[i:j + 1])
+    except Exception:
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _cli_search(query, n, kl):
+    """구독 CLI(클로드 → 아스트라)에게 검색을 시킨다. 둘 다 실패면 None."""
+    try:
+        import debate
+    except Exception:
+        return None
+    #   research 는 후보를 12개씩 부르지만 CLI 한테 그만큼 시키면 한참 걸린다 — 여섯이면 충분
+    prompt = CLI_SEARCH_PROMPT.format(q=query, n=min(max(n, 4), 6))
+    tries = (("클로드", lambda p: debate.ask_claude(p, timeout=180, tools="WebSearch")),
+             ("아스트라", lambda p: debate.ask_astra(p, timeout=240, web=True)))
+    for who, ask in tries:
+        try:
+            rows = _json_array(ask(prompt))
+        except Exception:
+            continue                      # 한도·오류면 다음 머리로
+        results = [
+            {"title": _clean(str(r.get("title", ""))),
+             "url": str(r.get("url", "")),
+             "snippet": _clean(str(r.get("snippet", "")))[:300]}
+            for r in rows
+            if isinstance(r, dict) and str(r.get("url", "")).startswith("http")
+        ][:n]
+        if results:
+            return {"ok": True, "query": query, "results": results, "via": who}
+    return None
+
+
 def search(query, n=6, kl="kr-ko"):
-    """DuckDuckGo lite 검색(키 불필요) → 막히면 Brave 로 승급(BRAVE_API_KEY 있을 때만).
+    """DuckDuckGo lite(키 불필요) → Brave(BRAVE_API_KEY 있을 때) → 구독 CLI 우회.
        kl = 지역·언어 코드(kr-ko/us-en/cn-zh/jp-jp/de-de…) — 나라별 현지 결과를 받기 위함."""
     query = (query or "").strip()
     if not query:
@@ -225,9 +279,13 @@ def search(query, n=6, kl="kr-ko"):
         return ddg
 
     brave = _brave_search(query, n, kl)
-    if brave is not None:
+    if brave is not None and brave.get("ok"):
         return brave
-    return ddg
+
+    cli = _cli_search(query, n, kl)
+    if cli is not None:
+        return cli
+    return brave if brave is not None else ddg
 
 
 # ── 2) 페이지 본문 추출 ──────────────────────────────────────────
@@ -299,9 +357,12 @@ def research(query, n_sources=4, per_chars=2800, kl="kr-ko", lang=None):
                 "msg": "검색은 됐지만 어느 페이지도 본문을 못 읽었어."}
     # 교차검증 판단용 요약 메타
     tiers = [s["tier"] for s in sources]
-    return {"ok": True, "query": query, "count": len(sources),
-            "domains": len({s["domain"] for s in sources}),
-            "best_tier": min(tiers), "sources": sources}
+    out = {"ok": True, "query": query, "count": len(sources),
+           "domains": len({s["domain"] for s in sources}),
+           "best_tier": min(tiers), "sources": sources}
+    if s.get("via"):                 # 구독 CLI 로 우회했으면 어디를 거쳤는지 남긴다
+        out["via"] = s["via"]
+    return out
 
 
 # ── 도구 디스패치 (memory_db/files/projects 와 동일 규약) ─────────
