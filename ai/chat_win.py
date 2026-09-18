@@ -9,7 +9,8 @@
 #   · 인증은 daemon_token.txt 를 읽어 X-Token 헤더로. (폰은 Tailscale 헤더, 여긴 토큰)
 #
 #   실행:  python chat_win.py     콘솔 없이:  run_chat.bat
-#   ※말하기는 안 붙였다 — 데몬 /chat 은 speak=False 라 화면에 글자로만 온다.
+#   · 대답은 소리로도 읽어준다(머리말 🔊 로 끄기) — 요청에 speak 를 실으면 데몬이
+#     아야카 목소리로 읽는다. 글자가 먼저 오고 읽기는 뒤에서 돈다.
 # ═══════════════════════════════════════════════════════════════
 import json
 import os
@@ -18,7 +19,7 @@ import threading
 import urllib.error
 import urllib.request
 
-from PySide6.QtCore import Qt, QObject, QSize, Signal, QTimer
+from PySide6.QtCore import Qt, QObject, Signal, QTimer
 from PySide6.QtGui import QFont, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLabel,
                                QPushButton, QScrollArea, QSizePolicy,
@@ -95,7 +96,13 @@ class Bubble(QLabel):
 
     ★줄바꿈(wordWrap) 라벨을 그냥 세로 Preferred 로 두면 레이아웃이 sizeHint 밑으로
     눌러서 **긴 답의 아랫줄이 잘린다**(실측: 필요 213px 인데 153px 만 받음).
-    세로를 Minimum + heightForWidth 로 잡아 '이 너비에서 필요한 높이'를 바닥으로 만든다.
+    세로를 Minimum + heightForWidth 로 두면 레이아웃이 '그때 그 너비에 필요한 높이'를
+    직접 물어본다.
+
+    ★★높이를 setMinimumHeight 로 직접 박지 말 것. '…' 대기 풍선은 폭이 50px 라
+    그 폭으로 잰 높이(558px)를 바닥으로 박아버리면, 폭이 310px 로 넓어져도 바닥이
+    안 풀려 **말풍선 아래가 텅 빈 채로 남는다**(2026-09-18 실제로 그렇게 났다).
+    minimumHeight 가 박히면 heightForWidth 까지 그 값으로 끌려와서 검사도 속는다.
     """
 
     def __init__(self, text):
@@ -104,28 +111,16 @@ class Bubble(QLabel):
         self.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.setFont(QFont("Malgun Gothic", 10))
         sp = QSizePolicy(QSizePolicy.Maximum, QSizePolicy.Minimum)
-        sp.setHeightForWidth(True)
+        sp.setHeightForWidth(True)              # 높이는 레이아웃이 그때 폭으로 물어본다
         self.setSizePolicy(sp)
-
-    def _need(self):
-        w = self.width() or min(self.maximumWidth(), self.sizeHint().width())
-        return self.heightForWidth(w) if w > 0 else self.sizeHint().height()
-
-    def minimumSizeHint(self):
-        return QSize(0, self._need())
-
-    def resizeEvent(self, e):
-        super().resizeEvent(e)
-        self.setMinimumHeight(self._need())      # 창 너비가 바뀌어도 다시 잡는다
 
     def setMaximumWidth(self, w):
         super().setMaximumWidth(w)
         self.updateGeometry()
 
     def setText(self, t):
-        super().setText(t)                       # '…' 를 긴 대답으로 갈아끼울 때
-        self.setMinimumHeight(self._need())      # 옛 한 줄 높이에 갇히지 않게 다시 잰다
-        self.updateGeometry()
+        super().setText(t)                       # '…' 를 대답으로 갈아끼울 때
+        self.updateGeometry()                    # 높이를 다시 물어보게만 한다
 
 
 class Input(QTextEdit):
@@ -176,9 +171,17 @@ class ChatWindow(QWidget):
         name.setStyleSheet("letter-spacing:2px; border:none;")
         self.status = QLabel("")
         self.status.setStyleSheet(f"color:{SUB}; border:none;")
+        self.speak = True                      # 대답을 소리로도 읽어줄지(데몬이 아야카로 읽는다)
+        self.spk = QPushButton("🔊")
+        self.spk.setFixedSize(32, 26)
+        self.spk.setCursor(Qt.PointingHandCursor)
+        self.spk.setToolTip("읽어주기 켜기/끄기")
+        self.spk.setStyleSheet("QPushButton{background:transparent; border:none; font-size:14px;}")
+        self.spk.clicked.connect(self._toggle_speak)
         hl.addWidget(name)
         hl.addStretch(1)
         hl.addWidget(self.status)
+        hl.addWidget(self.spk)
         root.addWidget(head)
 
         # ── 대화 영역 ──
@@ -239,15 +242,31 @@ class ChatWindow(QWidget):
         if who == "me":
             lab.setStyleSheet(f"background:{ME}; color:#fff; padding:9px 12px;"
                               "border-radius:14px; border-bottom-right-radius:4px;")
-            align = Qt.AlignRight
         elif who == "ai":
             lab.setStyleSheet(f"background:{CARD}; color:{FG}; padding:9px 12px;"
                               "border-radius:14px; border-bottom-left-radius:4px;")
-            align = Qt.AlignLeft
         else:                                    # sys
             lab.setStyleSheet(f"color:{SUB}; font-size:12px;")
-            align = Qt.AlignHCenter
-        self.log.insertWidget(self.log.count() - 1, lab, 0, align)
+
+        # ★정렬을 insertWidget 의 align 인자로 주면 안 된다 — 정렬이 걸린 레이아웃 항목은
+        #   heightForWidth 를 무시하고 sizeHint 크기로만 놓여서, 긴 글이 한 줄 높이(33px)로
+        #   납작하게 잘린다(2026-09-18 실측: 2500자가 449x33). 대신 행 위젯으로 감싸고
+        #   좌/우에 여백(stretch)을 넣어 밀어준다 — 이러면 높이는 레이아웃이 제대로 물어본다.
+        row = QWidget()
+        rl = QHBoxLayout(row)
+        rl.setContentsMargins(0, 0, 0, 0)
+        rl.setSpacing(0)
+        if who == "me":
+            rl.addStretch(1)
+            rl.addWidget(lab)
+        elif who == "ai":
+            rl.addWidget(lab)
+            rl.addStretch(1)
+        else:
+            rl.addStretch(1)
+            rl.addWidget(lab)
+            rl.addStretch(1)
+        self.log.insertWidget(self.log.count() - 1, row)
         QTimer.singleShot(0, self._to_bottom)
         return lab
 
@@ -258,10 +277,8 @@ class ChatWindow(QWidget):
     def resizeEvent(self, e):
         super().resizeEvent(e)
         w = int(self.width() * BUBBLE_MAX)
-        for i in range(self.log.count()):
-            it = self.log.itemAt(i).widget()
-            if isinstance(it, QLabel):
-                it.setMaximumWidth(w)
+        for b in self.findChildren(Bubble):
+            b.setMaximumWidth(w)
 
     def _fill_backlog(self):
         past = _backlog()
@@ -294,8 +311,12 @@ class ChatWindow(QWidget):
         self.tick.start(1000)
         threading.Thread(target=self._worker, args=(text,), daemon=True).start()
 
+    def _toggle_speak(self):
+        self.speak = not self.speak
+        self.spk.setText("🔊" if self.speak else "🔇")
+
     def _worker(self, text):
-        ok, res = _post("/chat", {"text": text})
+        ok, res = _post("/chat", {"text": text, "speak": self.speak})
         self.bridge.done.emit(ok, res)
 
     def _tick(self):
