@@ -66,3 +66,4 @@ ai/issues_seen.json
 ai/reddit_config.json
 ai/duck_state.json
 ai/debate_last.json
+ai/chat_win_state.json
