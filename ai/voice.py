@@ -352,7 +352,24 @@ def synth_ayaka(text: str, timeout: float = 30.0):
 _hush = threading.Event()      # 말걸기 창 Esc — 읽는 중이면 끊고, 합성 중이면 안 읽는다
 
 
+# ── 말하는 차례 (한 번에 하나) ──────────────────────────────────
+#   ★sd.play 는 출력 장치를 하나만 잡는다. 말하는 중에 딴 스레드가 또 speak 하면
+#     앞말이 통째로 끊기고, 끊긴 쪽의 sd.wait() 이 즉시 풀리면서 ducker.off() 까지
+#     먼저 터진다 — 뒷말이 나오는데 다른 앱 소리가 되살아난다.
+#     입구가 여럿이라(대화 답·이슈 알림·아침 브리핑·데몬) 실제로 겹친다.
+#     2026-09-18 호윤: "방금 tts 이상하게 재생됐어, 작동중에 새로운 소식오면 이러나".
+#   부르는 쪽은 자기 차례가 끝날 때까지 기다린다 — 말하고 나서 듣는 말걸기 창이
+#   비동기로 바뀌면 제 목소리를 녹음해버린다. 그래서 '띄우고 잊기'가 아니라 줄서기다.
+_say_lock = threading.Lock()
+_waiting = 0                   # 줄 서 있는 수
+_waiting_lock = threading.Lock()
+MAX_WAITING = 3                # 이보다 밀리면 묵은 알림은 버린다(뒤늦게 우르르 읽지 않게)
+_stop_at = 0.0                 # 마지막으로 '그만' 한 시각 — 그 전에 줄 선 것은 취소
+
+
 def stop_speaking():
+    global _stop_at
+    _stop_at = time.time()     # 이미 줄 서 있던 것들도 같이 취소
     _hush.set()
     try:
         sd.stop()
@@ -366,17 +383,36 @@ class Mouth:
         self.rate  = rate
         self.gain  = gain
 
-    def speak(self, text: str):
+    def speak(self, text: str, drop_if_busy: bool = False):
+        """차례를 기다렸다가 읽는다. 읽었으면 True.
+           drop_if_busy=True(이슈 알림 같은 뒷전 소식)면 줄이 길 때 그냥 버린다 —
+           묵은 뉴스를 몇 분 뒤에 우르르 읽어주는 게 더 이상하다."""
+        global _waiting
         if TTS_ENGINE == "ayaka":
             text = speak_numbers(text)       # clean_for_speech 가 ~·- 를 지우기 전에
         clean = clean_for_speech(text)
         if not clean:
-            return
-        _hush.clear()
+            return False
+
+        with _waiting_lock:
+            if drop_if_busy and _waiting >= MAX_WAITING:
+                return False
+            _waiting += 1
+        queued_at = time.time()
         try:
-            asyncio.run(self._speak(clean))
-        except Exception as e:
-            print(f"  [TTS 오류] {e}")
+            with _say_lock:                  # ★소리내는 구간은 한 번에 하나
+                if queued_at < _stop_at:     # 기다리는 사이에 '그만' 이 눌렸다
+                    return False
+                _hush.clear()
+                try:
+                    asyncio.run(self._speak(clean))
+                except Exception as e:
+                    print(f"  [TTS 오류] {e}")
+                    return False
+        finally:
+            with _waiting_lock:
+                _waiting -= 1
+        return True
 
     async def _speak(self, text: str):
         path = None

@@ -763,7 +763,8 @@ def _say(text):
     _last_say = time.time()
     try:
         import voice
-        voice.Mouth().speak(text)
+        #   뒷전 소식이라 줄이 밀려 있으면 버린다 — 지난 뉴스를 몇 분 뒤에 읽어주면 더 이상하다
+        voice.Mouth().speak(text, drop_if_busy=True)
     except Exception as e:
         print(f"  [이슈 TTS 오류] {e}")
 
