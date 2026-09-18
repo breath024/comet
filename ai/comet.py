@@ -12,6 +12,7 @@
 import os
 import sys
 import re
+import time
 import json
 import subprocess
 import itertools
@@ -674,7 +675,50 @@ def _is_schedule_ask(t):
     return bool(_SCHED_ASK_KW.search(s)) or len(s.replace(" ", "")) <= 12
 
 
-def _with_calendar(todo_text, days=7):
+# ── 일정 대답 뒤에 잇는 되물음 ─────────────────────────────────
+#   "다음주는 없어?"·"새로고침 못 하려나?" 에는 '일정'이란 말이 없어서 창구를 못 탔고,
+#   light 모델이 받아 "저는 캘린더 연동 기능이 없습니다" 라고 지어냈다(2026-09-18 로그).
+#   붙여둔 기능을 스스로 부인하는 게 제일 나쁜 실패라, 방금 일정을 답했으면 되물음도 받는다.
+_SCHED_WHEN = re.compile(r"(오늘|내일|낼|모레|이번\s*주|담주|다음\s*주|이번\s*달|다음\s*달|주말|이달|한\s*달)")
+_SCHED_AGAIN = re.compile(r"(새로\s*고침|갱신|다시\s*(봐|확인|읽)|refresh|반영)", re.I)
+_SCHED_FOLLOW_ASK = re.compile(r"(알려|뭐|무슨|무엇|있어|있나|있지|없어|없나|없지|보여|확인|어때|어떻게\s*되|남았|더)")
+#   일정 얘기 끝나고 딴 데로 넘어간 말까지 끌고 오지 않게
+_SCHED_FOLLOW_OFF = re.compile(r"(날씨|기온|비\s|눈\s|뉴스|주가|증시|환율|코인|밥|점심|저녁|메뉴|영화|노래|며칠|몇\s*시|무슨\s*요일)")
+SCHED_FOLLOW_SEC = 300          # 방금(닷 분 안) 일정을 답했을 때만
+
+
+def _is_schedule_follow(t):
+    s = (t or "").strip()
+    if len(s) > 40 or _SCHED_MAKE_KW.search(s) or _SCHED_OFF_KW.search(s) or _SCHED_FOLLOW_OFF.search(s):
+        return False
+    if _SCHED_AGAIN.search(s):
+        return True
+    if not _SCHED_WHEN.search(s):
+        return False
+    #   "다음주는?" 처럼 때만 던지는 한 마디 — 묻는 말이 아예 없어도 되물음으로 본다
+    return bool(_SCHED_FOLLOW_ASK.search(s)) or len(s.replace(" ", "")) <= 10
+
+
+def _sched_window(t):
+    """물어본 말에서 '언제까지' 를 읽는다. 못 읽으면 이레."""
+    if re.search(r"오늘", t):
+        return 0, "오늘"
+    if re.search(r"모레", t):
+        return 2, "모레까지"
+    if re.search(r"내일|낼", t):
+        return 1, "내일까지"
+    if re.search(r"담주|다음\s*주", t):
+        return 14, "다음 주까지"
+    if re.search(r"다음\s*달", t):
+        return 62, "다음 달까지"
+    if re.search(r"이번\s*달|이달|한\s*달", t):
+        return 31, "한 달 안"
+    if re.search(r"이번\s*주|주말", t):
+        return 7, "이번 주"
+    return 7, "시각 있는 일정(이레 안)"
+
+
+def _with_calendar(todo_text, days=7, force=False):
     """'일정' 화면 위에 구글 캘린더(비공개 ICS) 약속을 붙인다.
 
     시각 있는 약속은 캘린더에만 있다(todo_box 는 내가 직접 넣은 것뿐). 캘린더가 안 붙어
@@ -685,7 +729,7 @@ def _with_calendar(todo_text, days=7):
         import calendar_ics
         if not calendar_ics.configured():
             return todo_text
-        cal = calendar_ics.digest(days=days)
+        cal = calendar_ics.digest(days=days, force=force)
     except Exception as e:
         cal = f"[캘린더] 못 읽음: {e}"
     return (cal + "\n\n" + todo_text) if cal else todo_text
@@ -911,16 +955,14 @@ class Comet:
             ans = issue_box.command(t)
             if ans is not None:          # None = "이슈가 뭐야?" 같은 일반 질문 → 대화로 흘림
                 return ans
-        # ── 문장으로 물은 일정("내 일정 알려줘"·"오늘 일정 뭐 있어") → 같은 창구로 ──
-        if _is_schedule_ask(t):
+        # ── 문장으로 물은 일정("내 일정 알려줘"·"오늘 일정 뭐 있어") + 그 뒤 되물음 ──
+        _sched_hot = (time.time() - getattr(self, "_sched_at", 0.0)) < SCHED_FOLLOW_SEC
+        if _is_schedule_ask(t) or (_sched_hot and _is_schedule_follow(t)):
             import todo_box
-            if re.search(r"오늘", t):
-                days, label = 0, "오늘"
-            elif re.search(r"내일|낼", t):
-                days, label = 1, "내일까지"
-            else:
-                days, label = 7, "시각 있는 일정(이레 안)"
-            return _with_calendar(todo_box.upcoming(days=days, only_timed=True, label=label), days=days)
+            days, label = _sched_window(t)
+            self._sched_at = time.time()
+            return _with_calendar(todo_box.upcoming(days=days, only_timed=True, label=label),
+                                  days=days, force=bool(_SCHED_AGAIN.search(t)))
         # ── 할일·일정 창구 (프로젝트별로 던져두고 마감·시각으로 되찾기) — todo_box.py ──
         #   모델 안 거침(= GPU 안 씀, 즉답). "할일이 뭐야?" 같은 일반 질문은 None → 대화로 흘림.
         if re.match(r"^(할\s*일|투두|todo|일정|스케줄|구글)", t.strip(), re.I):
@@ -933,6 +975,7 @@ class Comet:
             if ans is not None:          # 목록 덤프를 대화기록에 안 쌓는다(이슈·알림 명령과 같은 관례)
                 if re.match(r"^(일정|스케줄)", t.strip()):
                     ans = _with_calendar(ans)   # 구글 캘린더(비공개 ICS) 약속을 위에 붙인다
+                    self._sched_at = time.time()   # 이 뒤의 되물음도 같은 창구로 받는다
                 return ans
         # ── 이슈 알림(AI·경제 강도별) — 로직은 autonomy.issues_command / issues.py ──
         if low == "알림" or low.startswith(("알림ai", "알림에이아이", "알림경제", "알림끔", "알림꺼",
