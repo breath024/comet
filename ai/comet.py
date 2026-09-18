@@ -735,6 +735,21 @@ def _with_calendar(todo_text, days=7, force=False):
     return (cal + "\n\n" + todo_text) if cal else todo_text
 
 
+# ── 로컬 모델이 '못 뜬' 것인지 가려내기 ────────────────────────
+#   게임 중엔 VRAM 이 없어 모델 로딩 자체가 죽는다(2026-09-18 실측):
+#     llama_init_from_model: failed to initialize the context … error loading model (500)
+#   이건 내 말이 이상해서 난 오류가 아니라 자리가 없어서 난 오류라, 클라우드로 우회할 값어치가 있다.
+#   반대로 내용 때문에 난 오류까지 구독으로 떠넘기면 안 되니 아래 낱말이 보일 때만 우회한다.
+_LOCAL_DOWN = re.compile(
+    r"(llama|error loading model|failed to initialize|out of memory|oom|cuda|vram|"
+    r"status code: 5\d\d|connection refused|10061|actively refused|"
+    r"model requires more system memory|terminated)", re.I)
+
+
+def _is_local_down(e):
+    return bool(_LOCAL_DOWN.search(str(e)))
+
+
 # ═══════════════════════════════════════════════════════════════
 #  COMET 본체
 # ═══════════════════════════════════════════════════════════════
@@ -1140,8 +1155,11 @@ class Comet:
                 else:
                     full = self._chat_stream(cfg)
         except Exception as e:
-            print(f"\n  [오류] 응답 실패: {e}")
-            return f"[오류] {e}"
+            #   게임 중 VRAM 이 없어 모델이 아예 못 뜨는 일이 잦다 — 그때 대화를 끊지 않고 우회한다
+            full = self._cloud_reply(text) if _is_local_down(e) else ""
+            if not full:
+                print(f"\n  [오류] 응답 실패: {e}")
+                return f"[오류] {e}"
 
         self.history.add("assistant", full)
         self.history.save()
@@ -1261,6 +1279,37 @@ class Comet:
         full = _stream_filtered(cfg["model"], messages, cfg)
         print()
         return full
+
+    # ── 로컬이 못 뜰 때 구독 CLI 로 대신 답하기 ──────────────────
+    def _cloud_reply(self, text):
+        """게임 중 VRAM 고갈 등으로 모델이 아예 안 올라올 때의 우회로.
+           브리핑의 클라우드 우회와 같은 배선 — API 키 과금이 아니라 호윤 구독 CLI 다.
+           도구·기억은 못 쓰니 아는 선에서만 답한다(그래서 실패를 숨기지 않고 우회했다고 알린다)."""
+        try:
+            import debate
+        except Exception:
+            return ""
+        talk = []
+        for m in self.history.recent()[-8:-1]:      # 맨 끝은 방금 한 말이라 뺀다
+            who = "호윤" if m.get("role") == "user" else "너"
+            talk.append(f"{who}: {str(m.get('content', ''))[:400]}")
+        prompt = (SYSTEM + "\n\n"
+                  "[지금은 로컬 모델이 못 떠서 네가 대신 답한다. 도구·파일·기억은 못 쓰니 아는 선에서 답하고,\n"
+                  " 확인이 필요한 건 모른다고 해라. 위 말투 그대로, 군더더기 없이 답만 내라.]\n\n"
+                  + ("[최근 대화]\n" + "\n".join(talk) + "\n\n" if talk else "")
+                  + f"[방금 물어본 것]\n호윤: {text}")
+        for who, ask in (("클로드", lambda p: debate.ask_claude(p, timeout=120)),
+                         ("아스트라", lambda p: debate.ask_astra(p, timeout=180))):
+            try:
+                out = (ask(prompt) or "").strip()
+            except Exception as e:
+                print(f"  [우회] {who} 실패: {str(e)[:110]}")
+                continue
+            if out:
+                print(f"  · 로컬 모델이 못 떠서 {who} 로 우회했다")
+                print(f"\nCOMET: {out}")
+                return out
+        return ""
 
     # ── 도구 작업: 동작선택(JSON) → 실행 → 결과로만 답변 ─────────
     #    forced=(action, query) 가 오면 동작선택을 건너뛴다(자동 웹검색 등 라우터가 미리 정한 경우)
