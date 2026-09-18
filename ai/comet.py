@@ -268,7 +268,7 @@ HELP_TEXT = """COMET 기능 목록
 [할일·일정]  (모델 안 거침 = 즉답)
   할일 RawCut 납품본 내일 3시까지 — 접수 (프로젝트·마감 자동 인식)
   할일 / 할일 오늘 / 할일 이번주   — 목록 (프로젝트별, 마감 임박순)
-  일정                            — 시각이 붙은 것만 (약속·미팅)
+  일정                            — 구글 캘린더 약속 + 시각 붙은 할 일 (이레 안)
   할일 RawCut                     — 그 프로젝트 것만
   할일 완료 3 [메모] / 할일 완료 납품 / 할일 다시 3 / 할일 전체
 
@@ -653,6 +653,44 @@ class Router:
         return tier, reason, use_tools, auto_web
 
 
+# ── "내 일정 알려줘" 처럼 문장으로 물어도 일정 창구로 보내기 ────────
+#   가로채기가 문장 맨 앞 단어만 보던 탓에 "내 일정 알려줘"·"오늘 일정 뭐 있어" 가
+#   일반 대화로 흘러 "확인할 수 없습니다" 가 나왔다(2026-09-18 호윤이 잡음).
+#   넓히되 좁게: 짧은 한 마디 + 묻는 말일 때만. '일정한/일정하다'는 제외하고,
+#   "일정 잡아줘" 같은 등록 의도는 안 가로챈다(그건 할일 접수 쪽 일).
+_SCHED_WORD = re.compile(r"(일정(?![한하히])|스케줄)")
+_SCHED_ASK_KW = re.compile(r"(알려|뭐|무슨|무엇|있어|있나|있지|보여|확인|어때|어떻게\s*되|남았)")
+_SCHED_MAKE_KW = re.compile(r"(잡아|잡을|잡자|추가|등록|넣어|만들|비워|옮겨|취소)")
+#   '일정'이 들어가도 내 약속 얘기가 아닌 것들("일정 관리 앱 추천해줘")
+_SCHED_OFF_KW = re.compile(r"(추천|어플|앱|툴|서비스|방법|짜는|산정|관리)")
+
+
+def _is_schedule_ask(t):
+    s = (t or "").strip()
+    if len(s) > 30 or not _SCHED_WORD.search(s) or _SCHED_MAKE_KW.search(s):
+        return False
+    if _SCHED_OFF_KW.search(s):
+        return False
+    return bool(_SCHED_ASK_KW.search(s)) or len(s.replace(" ", "")) <= 12
+
+
+def _with_calendar(todo_text, days=7):
+    """'일정' 화면 위에 구글 캘린더(비공개 ICS) 약속을 붙인다.
+
+    시각 있는 약속은 캘린더에만 있다(todo_box 는 내가 직접 넣은 것뿐). 캘린더가 안 붙어
+    있으면 원래 화면 그대로 — 없는 걸 있는 척하지 않는다. 읽기 실패는 숨기지 말고 보여준다
+    (조용히 0건이 되면 죽은 줄 모른다).
+    """
+    try:
+        import calendar_ics
+        if not calendar_ics.configured():
+            return todo_text
+        cal = calendar_ics.digest(days=days)
+    except Exception as e:
+        cal = f"[캘린더] 못 읽음: {e}"
+    return (cal + "\n\n" + todo_text) if cal else todo_text
+
+
 # ═══════════════════════════════════════════════════════════════
 #  COMET 본체
 # ═══════════════════════════════════════════════════════════════
@@ -873,6 +911,16 @@ class Comet:
             ans = issue_box.command(t)
             if ans is not None:          # None = "이슈가 뭐야?" 같은 일반 질문 → 대화로 흘림
                 return ans
+        # ── 문장으로 물은 일정("내 일정 알려줘"·"오늘 일정 뭐 있어") → 같은 창구로 ──
+        if _is_schedule_ask(t):
+            import todo_box
+            if re.search(r"오늘", t):
+                days, label = 0, "오늘"
+            elif re.search(r"내일|낼", t):
+                days, label = 1, "내일까지"
+            else:
+                days, label = 7, "시각 있는 일정(이레 안)"
+            return _with_calendar(todo_box.upcoming(days=days, only_timed=True, label=label), days=days)
         # ── 할일·일정 창구 (프로젝트별로 던져두고 마감·시각으로 되찾기) — todo_box.py ──
         #   모델 안 거침(= GPU 안 씀, 즉답). "할일이 뭐야?" 같은 일반 질문은 None → 대화로 흘림.
         if re.match(r"^(할\s*일|투두|todo|일정|스케줄|구글)", t.strip(), re.I):
@@ -883,6 +931,8 @@ class Comet:
             import todo_box
             ans = todo_box.command(t)
             if ans is not None:          # 목록 덤프를 대화기록에 안 쌓는다(이슈·알림 명령과 같은 관례)
+                if re.match(r"^(일정|스케줄)", t.strip()):
+                    ans = _with_calendar(ans)   # 구글 캘린더(비공개 ICS) 약속을 위에 붙인다
                 return ans
         # ── 이슈 알림(AI·경제 강도별) — 로직은 autonomy.issues_command / issues.py ──
         if low == "알림" or low.startswith(("알림ai", "알림에이아이", "알림경제", "알림끔", "알림꺼",
