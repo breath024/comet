@@ -54,6 +54,17 @@ def clean_for_speech(text: str) -> str:
     text = re.sub(r"```.*?```", " 자세한 코드는 화면을 봐. ", text, flags=re.DOTALL)
     text = re.sub(r"`[^`]*`", "", text)              # 인라인 코드
     text = re.sub(r"https?://\S+", " 링크 ", text)   # URL
+    #  LaTeX — 페르소나로 막아도 모델이 샌다(2026-09-18 로그). 소리로는 "달러 케이 일" 로 읽혀 제일 심하다.
+    #  자주 나오는 것만 말로 바꾸고, 나머지 \명령·수식 구분자는 지운다. ★$100 같은 금액은 살린다.
+    for pat, word in ((r"\\times|\\cdot", " 곱하기 "), (r"\\div", " 나누기 "),
+                      (r"\\pmod|\\bmod", " 나머지 "), (r"\\rightarrow|\\to\b|\\Rightarrow", " 는 "),
+                      (r"\\leq|\\le\b", " 이하 "), (r"\\geq|\\ge\b", " 이상 "),
+                      (r"\\neq|\\ne\b", " 아님 "), (r"\\approx", " 대략 ")):
+        text = re.sub(pat, word, text)
+    text = re.sub(r"\\[a-zA-Z]+\s*\{?|\\[,;!]", " ", text)   # 남은 \명령
+    text = re.sub(r"\$([^$\d][^$]*?)\$", r" \1 ", text)      # $수식$ — 구분자만 벗긴다($100 은 안 건드림)
+    text = re.sub(r"\\\(|\\\)|\\\[|\\\]", " ", text)         # \( \) \[ \]
+    text = re.sub(r"[{}^]", " ", text)
     text = re.sub(r"[#*_>~|\[\]()\-•·]", " ", text)  # 마크다운 기호·불릿
     text = text.replace("\n", " ")
     text = text.replace(",", " ").replace("、", " ")  # 쉼표 제거 → 끊김 완화
