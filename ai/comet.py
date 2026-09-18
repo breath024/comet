@@ -276,6 +276,11 @@ HELP_TEXT = """COMET 기능 목록
   할일 RawCut                     — 그 프로젝트 것만
   할일 완료 3 [메모] / 할일 완료 납품 / 할일 다시 3 / 할일 전체
 
+[고전 암호]  (모델 안 거침 = 즉답, 산수를 코드가 함)
+  poten 아핀 암호 k1=7 k2=2 로 암호화   — 아핀 (복호화도, 열쇠는 a=·b= 로 써도 됨)
+  hello 시저 암호 3칸으로 암호화 / rot13 으로 hello
+  방향(암호화·복호화)을 안 밝히면 둘 다 보여주고, 열쇠는 다음 줄까지 기억한다
+
 [프로젝트 현황 브리핑]
   "브리핑" / "프로젝트 현황" / "Only Money 진행상황" — HANDOFF.md 실시간 읽기
 
@@ -974,6 +979,21 @@ class Comet:
         if low in ("게임모드자동", "게임모드auto"):
             self.game_mode = "auto"
             return "게임모드 자동 — GPU 바쁘면 알아서 가볍게."
+        # ── 고전 암호(아핀·시저·ROT13) — 모델 안 거침(= 즉답, GPU 안 씀) — cipher.py ──
+        #   2026-09-18 로그: 12b 가 "poten k1=7 k2=2" 를 fzhje→zwfep→dwfep 로 세 번 만에 맞췄다.
+        #   중간에 "(15*7+2)%26 = 105%26" 이라고 쓴 줄까지 있다(107 이 맞다). 산수는 코드가 한다.
+        #   "아핀 암호가 뭐야?" 같은 설명 질문은 command() 가 None → 평소대로 모델이 답한다.
+        try:
+            import cipher
+            ans = cipher.command(t)
+        except Exception as e:
+            print(f"  [암호 계산 건너뜀] {e}")   # 여기서 죽으면 대화 전체가 막힌다
+            ans = None
+        if ans is not None:
+            self.history.add("user", text)       # 뒤에 "왜 그래?" 로 이어질 수 있게 기록은 남긴다
+            self.history.add("assistant", ans)
+            self.history.save()
+            return ans
         # ── 이슈 접수함 (쓰다가 이상한 것 한 줄로 던져두기 → 고쳐지면 닫기) — issue_box.py ──
         if t.strip().startswith("이슈"):
             import issue_box
