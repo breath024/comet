@@ -354,6 +354,74 @@ def _bsky_search(cat, query):
     return out
 
 
+def src_mastodon(cat="ai", topic=AI_TOPIC):
+    """마스토돈 인기글 중 분야에 걸린 것. 한 사람 의견이라 '잔잔'까지만.
+       ★태그 타임라인(/timelines/tag/ai)은 쓰지 않는다 — 좋아요가 거의 전부 0 이라
+         반응 크기를 못 잰다(2026-09-18 실측). 서버가 고른 인기글만 받아 분야어로 거른다."""
+    out = []
+    for p in json.loads(_get("https://mastodon.social/api/v1/trends/statuses?limit=40")):
+        text = _strip_tags(p.get("content") or "")
+        if len(text) < 25 or not topic.search(text):
+            continue
+        fav = int(p.get("favourites_count") or 0)
+        if fav < 15:
+            continue
+        who = ((p.get("account") or {}).get("display_name")
+               or (p.get("account") or {}).get("acct") or "").split("@")[0].strip()
+        it = _item(cat, text[:140], 1, f"마스토돈 좋아요 {fav:,}", p.get("url") or "", lang="en")
+        it["frame"] = f"마스토돈에서 {who or '어떤'} 이라는 유저가 쓴 개인 의견"
+        out.append(it)
+    return out
+
+
+def src_papers():
+    """AI 논문 — 허깅페이스 데일리페이퍼(업보트로 강도) + arXiv cs.AI 최신(업보트가 없어 전부 잔잔).
+       읽어줄 때 '논문'이라고 밝히도록 frame 을 단다."""
+    out, now = [], time.time()
+    try:
+        for r in json.loads(_get("https://huggingface.co/api/daily_papers?limit=30")):
+            p = r.get("paper") or {}
+            title, up = _strip_tags(p.get("title") or ""), int(p.get("upvotes") or 0)
+            if not title:
+                continue
+            try:
+                if (now - datetime.fromisoformat(
+                        (r.get("publishedAt") or "").replace("Z", "+00:00")).timestamp()) > 3 * 86400:
+                    continue
+            except Exception:
+                continue
+            lv = 2 if up >= 30 else 1 if up >= 5 else 0
+            if not lv:
+                continue
+            it = _item("ai", title, lv, f"허깅페이스 데일리페이퍼 추천 {up}",
+                       f"https://huggingface.co/papers/{p.get('id')}", lang="en")
+            it["frame"] = "AI 논문"
+            it["lead"] = _strip_tags(p.get("summary") or "")[:600]
+            out.append(it)
+    except Exception as e:
+        _FAILED.append(f"HF데일리페이퍼: {str(e)[:100]}")
+    try:
+        import xml.etree.ElementTree as ET
+        root = ET.fromstring(_get("http://export.arxiv.org/api/query?search_query=cat:cs.AI"
+                                  "&sortBy=submittedDate&sortOrder=descending&max_results=25").encode())
+        seen_t = {x["title"] for x in out}
+        for e in root.findall("{http://www.w3.org/2005/Atom}entry")[:25]:
+            title = _strip_tags(e.findtext("{http://www.w3.org/2005/Atom}title", ""))
+            # 업보트가 없어 강도를 못 매긴다 — 분야어에 걸린 것만, 전부 '잔잔'
+            if not title or title in seen_t or not AI_TOPIC.search(title):
+                continue
+            link = e.findtext("{http://www.w3.org/2005/Atom}id", "")
+            it = _item("ai", title, 1, "arXiv cs.AI 신규", link, lang="en")
+            it["frame"] = "AI 논문"
+            it["lead"] = _strip_tags(e.findtext("{http://www.w3.org/2005/Atom}summary", ""))[:600]
+            out.append(it)
+            if len(out) >= 12:      # arXiv 는 하루 수십 편 — 목록이 논문으로 덮이지 않게 자른다
+                break
+    except Exception as e:
+        _FAILED.append(f"arXiv: {str(e)[:100]}")
+    return out
+
+
 def src_hf_trending():
     """허깅페이스 트렌딩 모델 상위 10 중 최근 4일 안에 올라온 것. 좋아요 1500↑ 볼만함 / 400↑ 잔잔."""
     out, now = [], time.time()
@@ -372,6 +440,52 @@ def src_hf_trending():
             it = _item("ai", f"허깅페이스 트렌딩 {rank}위: {mid}", lv, f"좋아요 {likes:,}",
                        f"https://huggingface.co/{mid}")
             it["ko"] = f"허깅페이스 트렌딩 {rank}위에 {mid.split('/')[-1]} 올라왔어"
+            out.append(it)
+    return out
+
+
+def src_lobsters(cat="ai", topic=AI_TOPIC):
+    """Lobsters 1면 — 해커뉴스와 비슷한 개발자 커뮤니티. 점수가 곧 반응 크기.
+       ★/t/ai.json(태그 페이지)이 아니라 hottest.json 을 받아 분야어로 거른다 —
+         태그 페이지는 최고점이 27점이라 강도를 못 매긴다(2026-09-18 실측)."""
+    out, cut = [], time.time() - 48 * 3600
+    for x in json.loads(_get("https://lobste.rs/hottest.json")):
+        title = _strip_tags(x.get("title") or "")
+        if not topic.search(title + " " + (x.get("description_plain") or "")):
+            continue
+        try:
+            if datetime.fromisoformat(x["created_at"]).timestamp() < cut:
+                continue
+        except Exception:
+            pass
+        pts = int(x.get("score") or 0)
+        lv = 2 if pts >= 60 else 1 if pts >= 20 else 0
+        if lv:
+            out.append(_item(cat, title, lv, f"Lobsters {pts}점",
+                             x.get("short_id_url") or x.get("comments_url") or "", lang="en"))
+    return out
+
+
+def src_github_trending(cat="ai", topic=AI_TOPIC):
+    """GitHub 하루 트렌딩 — 오늘 붙은 별이 곧 반응 크기. 저장소 이름·설명이 분야어에 걸린 것만.
+       ★마크업이 바뀌면 조용히 0건이 된다 — --sources 자가점검에 들어 있다."""
+    out = []
+    for row in _get("https://github.com/trending?since=daily").split('class="Box-row"')[1:]:
+        # ★<a> 는 href 앞에 data-hydro-click 이 먼저 온다 — '<a href' 로 붙여 찾으면 통째로 0건이 된다
+        repo = re.search(r'<h2[^>]*>\s*<a\b[^>]*?href="/([\w.-]+/[\w.-]+)"', row)
+        star = re.search(r"([\d,]+)\s*stars\s*today", row)
+        desc = re.search(r'<p[^>]*class="col-9[^"]*"[^>]*>\s*(.*?)\s*</p>', row, re.S)
+        if not (repo and star):
+            continue
+        name, d = repo.group(1), _strip_tags(desc.group(1)) if desc else ""
+        if not topic.search(name + " " + d):
+            continue
+        n = int(star.group(1).replace(",", ""))
+        lv = 2 if n >= 1500 else 1 if n >= 500 else 0
+        if lv:
+            it = _item(cat, f"GitHub 트렌딩: {name} — {d[:80]}", lv, f"오늘 별 {n:,}",
+                       f"https://github.com/{name}", lang="en")
+            it["ko"] = f"깃허브 트렌딩에 {name.split('/')[-1]} 올라왔어 (오늘 별 {n:,}개)"
             out.append(it)
     return out
 
@@ -542,6 +656,10 @@ def collect_ai():
                       "url": g["items"][0].get("link", ""), "tokens": sorted(g["tokens"])})
     found += _safe(src_geeknews)
     found += _safe(src_bluesky, "ai")
+    found += _safe(src_mastodon, "ai", AI_TOPIC)
+    found += _safe(src_lobsters, "ai", AI_TOPIC)
+    found += _safe(src_github_trending, "ai", AI_TOPIC)
+    found += _safe(src_papers)
     found += _safe(src_hf_trending)
     found += _safe(src_github_releases)
     found += _safe(src_dcinside, "thesingularity", "mgallery/board", "ai", 150, 60, "디시 특이점갤", AI_TOPIC)
@@ -594,6 +712,7 @@ def collect_econ():
     found += _safe(src_dcinside, "bitcoins_new1", "board", "econ", 150, 60, "디시 코인갤", ECON_TOPIC)
     found += _safe(src_clien)
     found += _safe(src_bluesky, "econ")
+    found += _safe(src_mastodon, "econ", ECON_TOPIC)
     return _merge_community(found)
 
 
@@ -709,13 +828,20 @@ def _koreanize(items, busy=False):
         for it in todo:
             if it.get("lead") and not it.get("detail"):
                 it["detail"] = _first_korean_sentence(it["lead"])
+        _frame_fallback(todo)
         return
     try:
         import ollama
-        listing = "\n".join(f"{i}. 제목: {it['title']}" + (f"\n   본문 앞부분: {it['lead']}" if it.get("lead") else "")
+        listing = "\n".join(f"{i}. 제목: {it['title']}"
+                            + (f"\n   ※이건 {it['frame']}이다." if it.get("frame") else "")
+                            + (f"\n   본문 앞부분: {it['lead']}" if it.get("lead") else "")
                             for i, it in enumerate(todo))
         prompt = ("아래 뉴스마다 두 가지를 한국어로 써라.\n"
                   "ko: 제목을 한 문장(35자 이내)으로. 반말로 끝내라(예: '~했대', '~나왔어').\n"
+                  "※ 표시가 있으면 그게 뭔지 ko 에서 드러내라 — 사실 보도가 아닌 걸 단정으로 읽으면 안 된다.\n"
+                  "  · 개인 의견: '누구누구라는 유저가 ~래' 처럼 누가 한 말인지 밝히고, "
+                  "끝에 '개인 의견이야' 를 붙여라(35자 넘어도 된다).\n"
+                  "  · 논문: '~라는 논문이 나왔어' 또는 '~주제 논문인데 ~라는 내용이야' 처럼 써라.\n"
                   "detail: 본문 앞부분이 있으면 핵심 내용을 1~2문장(90자 이내)으로 — 숫자·누가·무엇을 우선. "
                   "제목에 이미 있는 말을 되풀이하지 말고, 제목에 없는 정보(수치·배경·이유)를 써라. "
                   "본문 앞부분이 없거나 더할 정보가 없으면 빈 문자열. 반말로.\n"
@@ -736,6 +862,27 @@ def _koreanize(items, busy=False):
                 todo[i]["detail"] = row["detail"].strip()
     except Exception:
         pass
+    _frame_fallback(todo)
+
+
+def _frame_fallback(items):
+    """모델이 출처를 안 밝혔거나 아예 안 돌았을 때의 마지막 방어.
+       ★남의 개인 의견·논문이 사실 보도처럼 읽히는 건 그냥 틀린 것이라 파이썬이 못을 박는다."""
+    for it in items:
+        frame = it.get("frame")
+        if not frame:
+            continue
+        ko = (it.get("ko") or "").strip()
+        if frame == "AI 논문":
+            if "논문" not in ko:
+                it["ko"] = (f"{ko} — 이런 논문이 나왔어" if ko
+                            else f"{it['title'][:60]} 라는 논문이 나왔어")
+        else:                                   # 마스토돈 등 개인 의견
+            who = re.sub(r"^마스토돈에서\s*|\s*이라는 유저가 쓴 개인 의견$", "", frame)
+            if "유저" not in ko and "의견" not in ko:
+                it["ko"] = f"{who} 라는 유저가 {ko or it['title'][:60]}"
+            if "의견" not in it["ko"]:
+                it["ko"] = _sentence(it["ko"]) + " 개인 의견이야."
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1043,6 +1190,11 @@ SOURCES = {   # 소스별 생존 확인(자가점검용) — 0건이 며칠 이�
     "긱뉴스": lambda: src_geeknews(topic=re.compile(".")),
     "블루스카이(AI)": lambda: src_bluesky("ai", "OpenAI"),
     "블루스카이(경제)": lambda: src_bluesky("econ", "Federal Reserve"),
+    "마스토돈": lambda: json.loads(_get("https://mastodon.social/api/v1/trends/statuses?limit=40")),
+    "Lobsters": lambda: json.loads(_get("https://lobste.rs/hottest.json")),
+    "GitHub 트렌딩": lambda: src_github_trending("ai", re.compile(".")),
+    "논문(HF+arXiv)": src_papers,
+    "매체 RSS": lambda: _feeds("ai") + _feeds("econ"),
     "허깅페이스": lambda: json.loads(_get("https://huggingface.co/api/trending?type=model&limit=10"))["recentlyTrending"],
     "GitHub": lambda: [r for r in GH_REPOS if "<entry>" in _get(f"https://github.com/{r}/releases.atom")],
     "디시 특이점갤": lambda: src_dcinside("thesingularity", "mgallery/board", "ai", 1, 0, "특갤"),
