@@ -165,14 +165,17 @@ def _news(queries):
 #  그래서 매체 피드를 그대로 받아 같은 _cluster 에 섞는다. 매체가 늘면 '몇 개 매체 보도'가
 #  제대로 세지므로, 건수만 느는 게 아니라 강도 판정도 같이 정확해진다.
 #  ★한경(hankyung.com/feed/economy)은 403 이라 뺐다(2026-09-18 실측).
+#  넷째 칸 = '물어볼 때만'. True 면 자동 2분 점검에서 안 부르고 호윤이 '뉴스' 라고 칠 때만 부른다.
+#  ★연합뉴스 경제 RSS 가 그렇다 — 77건 중 사건어가 걸린 건 1건뿐이고 그마저 구글뉴스에 이미 있었다.
+#    나머지는 '[게시판] 기금 출연' 같은 보도자료라 자동 알림엔 보탬이 안 된다(호윤 판단, 2026-09-18).
 NEWS_FEEDS = {
-    "ai": [("Techmeme", "https://www.techmeme.com/feed.xml", "en")],
+    "ai": [("Techmeme", "https://www.techmeme.com/feed.xml", "en", False)],
     # ★Investing 은 news_25 를 쓴다 — news_285 는 2024-11-26 에 멈춘 죽은 피드다(2026-09-18 실측).
     #   피드를 새로 넣을 땐 건수만 보지 말고 최신 pubDate 를 꼭 볼 것. 200 OK 로도 2년 전 걸 준다.
-    "econ": [("연합뉴스", "https://www.yna.co.kr/rss/economy.xml", "ko"),
-             ("매일경제", "https://www.mk.co.kr/rss/30100041/", "ko"),
-             ("Investing", "https://www.investing.com/rss/news_25.rss", "en"),
-             ("MarketWatch", "https://feeds.content.dowjones.io/public/rss/mw_topstories", "en")],
+    "econ": [("연합뉴스", "https://www.yna.co.kr/rss/economy.xml", "ko", True),
+             ("매일경제", "https://www.mk.co.kr/rss/30100041/", "ko", False),
+             ("Investing", "https://www.investing.com/rss/news_25.rss", "en", False),
+             ("MarketWatch", "https://feeds.content.dowjones.io/public/rss/mw_topstories", "en", False)],
 }
 
 
@@ -209,10 +212,13 @@ def _rss(name, url, lang):
     return out
 
 
-def _feeds(cat):
-    """그 분야 매체 피드 전부. 하나가 죽어도 나머지는 온다 — 죽은 건 '확인 못 한 소스'로 남는다."""
+def _feeds(cat, asked=False):
+    """그 분야 매체 피드. 하나가 죽어도 나머지는 온다 — 죽은 건 '확인 못 한 소스'로 남는다.
+       asked=True(호윤이 직접 물어본 것)면 '물어볼 때만' 짝지어둔 피드까지 같이 받는다."""
     out, cut = [], time.time() - NEWS_WINDOW_H * 3600
-    for name, url, lang in NEWS_FEEDS.get(cat, []):
+    for name, url, lang, ask_only in NEWS_FEEDS.get(cat, []):
+        if ask_only and not asked:
+            continue
         try:
             out += [it for it in _rss(name, url, lang) if (it.get("_ts") or 0) >= cut]
         except Exception as e:
@@ -381,8 +387,11 @@ def src_mastodon(cat="ai", topic=AI_TOPIC):
     return out
 
 
-def src_papers():
-    """AI 논문 — 허깅페이스 데일리페이퍼(업보트로 강도) + arXiv cs.AI 최신(업보트가 없어 전부 잔잔).
+def src_papers(asked=False):
+    """AI 논문 — 허깅페이스 데일리페이퍼(업보트로 강도)는 늘,
+       arXiv cs.AI 최신은 호윤이 물어볼 때만(asked=True).
+       ★arXiv 는 업보트가 없어 강도를 못 매긴다 — 전부 '잔잔'이라 자동 알림엔 안 뜨면서
+         목록만 논문으로 덮는다. 그래서 자동 점검에선 뺐다(호윤 판단, 2026-09-18).
        읽어줄 때 '논문'이라고 밝히도록 frame 을 단다."""
     out, now = [], time.time()
     try:
@@ -407,11 +416,14 @@ def src_papers():
             out.append(it)
     except Exception as e:
         _FAILED.append(f"HF데일리페이퍼: {str(e)[:100]}")
+    if not asked:
+        return out
     try:
         import xml.etree.ElementTree as ET
         root = ET.fromstring(_get("http://export.arxiv.org/api/query?search_query=cat:cs.AI"
                                   "&sortBy=submittedDate&sortOrder=descending&max_results=25").encode())
         seen_t = {x["title"] for x in out}
+        n_arxiv = 0
         for e in root.findall("{http://www.w3.org/2005/Atom}entry")[:25]:
             title = _strip_tags(e.findtext("{http://www.w3.org/2005/Atom}title", ""))
             # 업보트가 없어 강도를 못 매긴다 — 분야어에 걸린 것만, 전부 '잔잔'
@@ -422,7 +434,10 @@ def src_papers():
             it["frame"] = "AI 논문"
             it["lead"] = _strip_tags(e.findtext("{http://www.w3.org/2005/Atom}summary", ""))[:600]
             out.append(it)
-            if len(out) >= 12:      # arXiv 는 하루 수십 편 — 목록이 논문으로 덮이지 않게 자른다
+            n_arxiv += 1
+            # arXiv 는 하루 수십 편 — 여기서 자른다. ★상한은 arXiv 것만 센다.
+            #   전체(out)로 세면 데일리페이퍼가 먼저 자리를 다 채워 arXiv 가 1건만 들어왔다.
+            if n_arxiv >= 8:
                 break
     except Exception as e:
         _FAILED.append(f"arXiv: {str(e)[:100]}")
@@ -630,7 +645,8 @@ def _opinion(title):
 # ═══════════════════════════════════════════════════════════════
 #  수집 — 분야별
 # ═══════════════════════════════════════════════════════════════
-def collect_ai():
+def collect_ai(asked=False):
+    """asked=True = 호윤이 '뉴스' 라고 직접 물어본 것. '물어볼 때만' 소스까지 같이 본다."""
     found = []
     # 1) 해커뉴스 1면 — 점수가 곧 강도
     try:
@@ -652,7 +668,7 @@ def collect_ai():
     # 2) 구글뉴스 — 같은 사건을 여러 매체가 쓰면 강도↑
     items = _news([("OpenAI OR Anthropic OR Gemini OR DeepSeek OR Nvidia AI when:1d", "en"),
                    ("인공지능 OR 생성형AI OR 오픈AI OR 앤트로픽 OR 엔비디아 when:1d", "ko")])
-    items += _feeds("ai")
+    items += _feeds("ai", asked)
     for g in _cluster(items):
         if not AI_TOPIC.search(g["title"]):
             continue
@@ -666,7 +682,7 @@ def collect_ai():
     found += _safe(src_mastodon, "ai", AI_TOPIC)
     found += _safe(src_lobsters, "ai", AI_TOPIC)
     found += _safe(src_github_trending, "ai", AI_TOPIC)
-    found += _safe(src_papers)
+    found += _safe(src_papers, asked)
     found += _safe(src_hf_trending)
     found += _safe(src_github_releases)
     found += _safe(src_dcinside, "thesingularity", "mgallery/board", "ai", 150, 60, "디시 특이점갤", AI_TOPIC)
@@ -674,7 +690,7 @@ def collect_ai():
     return _merge_community(found)
 
 
-def collect_econ():
+def collect_econ(asked=False):
     found = []
     # 1) 실측 등락 — 가장 믿을 만한 강도
     try:
@@ -703,7 +719,7 @@ def collect_econ():
     # 2) 뉴스 — 사건어 + 매체 수
     items = _news([("경제 OR 금리 OR 환율 OR 증시 when:1d", "ko"),
                    ("Fed OR stock market OR tariff OR recession when:1d", "en")])
-    items += _feeds("econ")
+    items += _feeds("econ", asked)
     for g in _cluster(items):
         n = len(g["sources"])
         ev = bool(ECON_EVENT.search(g["title"]))
@@ -1096,7 +1112,8 @@ def news_digest(min_level=2, per_cat=5, *, gpu_busy_fn=None, speak=True, show=Tr
     picked = {}
     for cat, fn in COLLECTORS.items():
         try:
-            found = [x for x in fn() if x["level"] >= min_level and _region_ok(x, lang)]
+            # asked=True — 호윤이 직접 물어본 자리다. 자동 점검에서 뺀 소스(연합뉴스·arXiv)도 여기선 본다.
+            found = [x for x in fn(asked=True) if x["level"] >= min_level and _region_ok(x, lang)]
         except Exception as e:
             log(f"[뉴스] {cat} 수집 실패: {e}")
             continue
@@ -1200,8 +1217,9 @@ SOURCES = {   # 소스별 생존 확인(자가점검용) — 0건이 며칠 이�
     "마스토돈": lambda: json.loads(_get("https://mastodon.social/api/v1/trends/statuses?limit=40")),
     "Lobsters": lambda: json.loads(_get("https://lobste.rs/hottest.json")),
     "GitHub 트렌딩": lambda: src_github_trending("ai", re.compile(".")),
-    "논문(HF+arXiv)": src_papers,
-    "매체 RSS": lambda: _feeds("ai") + _feeds("econ"),
+    # 자가점검은 '살아 있나'를 보는 것이라 물어볼 때만 쓰는 것(arXiv·연합뉴스)까지 다 켠다
+    "논문(HF+arXiv)": lambda: src_papers(asked=True),
+    "매체 RSS": lambda: _feeds("ai", True) + _feeds("econ", True),
     "허깅페이스": lambda: json.loads(_get("https://huggingface.co/api/trending?type=model&limit=10"))["recentlyTrending"],
     "GitHub": lambda: [r for r in GH_REPOS if "<entry>" in _get(f"https://github.com/{r}/releases.atom")],
     "디시 특이점갤": lambda: src_dcinside("thesingularity", "mgallery/board", "ai", 1, 0, "특갤"),
