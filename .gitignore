@@ -68,3 +68,4 @@ ai/duck_state.json
 ai/debate_last.json
 ai/chat_win_state.json
 ai/calendar_config.json
+ai/logs/daemon-*.log

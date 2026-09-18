@@ -20,6 +20,65 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+
+# ── 콘솔에 찍히는 걸 파일로도 남긴다 (logs/daemon-YYYY-MM-DD.log) ──
+#   ★데몬 창을 닫으면 그 글자는 사라진다 — 오류가 나도 나중에 되짚을 수가 없었다
+#   (2026-09-18 실제로 호윤이 본 오류를 못 찾음). 화면은 그대로 두고 파일에 겹쳐 쓴다.
+class _Tee:
+    def __init__(self, stream):
+        self.stream = stream
+        self.lock = threading.Lock()
+        self.day = ""
+        self.fp = None
+        self.bol = True                              # 줄 첫머리인가(여기에만 시각을 붙인다)
+
+    def _file(self):
+        day = time.strftime("%Y-%m-%d")
+        if self.fp is None or day != self.day:      # 자정을 넘기면 새 파일로
+            if self.fp:
+                try:
+                    self.fp.close()
+                except Exception:
+                    pass
+            d = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+            os.makedirs(d, exist_ok=True)
+            self.fp = open(os.path.join(d, f"daemon-{day}.log"), "a", encoding="utf-8")
+            self.day = day
+        return self.fp
+
+    def write(self, s):
+        with self.lock:
+            try:
+                self.stream.write(s)
+            except Exception:
+                pass
+            try:
+                f = self._file()
+                for part in s.splitlines(keepends=True):
+                    if self.bol and part.strip():
+                        f.write(time.strftime("%H:%M:%S "))
+                    f.write(part)
+                    self.bol = part.endswith("\n")
+                f.flush()
+            except Exception:
+                pass
+        return len(s)
+
+    def flush(self):
+        try:
+            self.stream.flush()
+        except Exception:
+            pass
+
+    def isatty(self):
+        return getattr(self.stream, "isatty", lambda: False)()
+
+
+sys.stdout = _Tee(sys.stdout)
+sys.stderr = _Tee(sys.stderr)
+print("═" * 55)
+print(f"[로그] 이 창의 내용은 logs/daemon-{time.strftime('%Y-%m-%d')}.log 에도 쌓인다")
+
 # 데몬 기동 시 호윤 최신 메모리 → profile/ 자동 동기화 (코멧이 항상 최신으로 깨어남).
 #  ★comet import 전에 해야 SYSTEM(_PROFILE)이 갱신본을 로드한다. 복사·갱신만(미러 아님=안전).
 try:
