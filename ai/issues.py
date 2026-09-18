@@ -210,31 +210,65 @@ _bsky_turn = {"ai": 0, "econ": 0}
 # ★비인증 검색은 몰아 부르면 IP 가 막힌다 — 몇 분 새 ~15회에 "administrative rules" 403, 10분 넘게 안 풀림(2026-09-17).
 #   그래서 분야별 10분에 1번만 부르고, 그 사이 바퀴는 지난 결과를 다시 쓴다(가산점이 끊기지 않게).
 #   403 이면 1시간 쉰다.
+# ★2026-09-18 에 또 403. 쉬는 시간이 메모리에만 있어서 데몬을 재시작할 때마다 0 으로 돌아갔고,
+#   막힌 줄 모르고 바로 다시 때렸다(12:40 로그 = 재시작 2분 뒤 또 403). 그래서 쉬는 시각을 파일에 남긴다.
+#   그리고 ai·econ 이 15초 간격으로 연달아 때리던 것도 붙여놨다 — 호출 사이 최소 BSKY_MIN_GAP 을 둔다.
 BSKY_GAP = 600
 BSKY_BACKOFF = 3600
-_bsky_cache = {}     # cat → (다음 호출 가능 시각, 지난 결과)
+BSKY_MIN_GAP = 90        # 분야가 달라도 이 간격 안엔 두 번 안 부른다
+BSKY_STALE_H = 3         # 막혀 있는 동안 지난 결과를 재활용하는 한계(24시간 인기글이라 이 정도는 안 상함)
+BSKY_FILE = os.path.join(_DIR, "issues_bsky.json")
+_bsky_cache = {}         # cat → (다음 호출 가능 시각, 받은 시각, 지난 결과)
+_bsky_last_call = 0.0
+
+
+def _bsky_state():
+    """{cat: {"ready":…, "at":…, "items":[…]}} — 데몬이 재시작해도 쉬는 시간이 살아남게."""
+    if not _bsky_cache:
+        for cat, v in (_load(BSKY_FILE, {}) or {}).items():
+            if isinstance(v, dict):
+                _bsky_cache[cat] = (v.get("ready", 0), v.get("at", 0), v.get("items") or [])
+    return _bsky_cache
+
+
+def _bsky_keep(cat, ready, at, items):
+    _bsky_cache[cat] = (ready, at, items)
+    _save(BSKY_FILE, {c: {"ready": r, "at": a, "items": i} for c, (r, a, i) in _bsky_cache.items()})
 
 
 def src_bluesky(cat, query=None):
     """블루스카이 최근 24시간 인기글(키 없음). 좋아요 수로 반응 크기.
        검색어가 곧 분야 필터라 제목 단어 필터는 안 건다(영어 글이라 ECON_TOPIC 에 안 걸린다).
        query 를 주면(자가점검) 쉬는 시간을 무시하고 바로 부른다."""
+    global _bsky_last_call
     import urllib.error
     if query is not None:
         return _bsky_search(cat, query)
-    ready, last = _bsky_cache.get(cat, (0, []))
-    if time.time() < ready:
-        return [dict(x) for x in last]
+    ready, got_at, last = _bsky_state().get(cat, (0, 0, []))
+    fresh = [dict(x) for x in last] if (time.time() - got_at) < BSKY_STALE_H * 3600 else []
+    if time.time() < ready or (time.time() - _bsky_last_call) < BSKY_MIN_GAP:
+        return fresh
     qs = BSKY_QUERIES[cat]
     query = qs[_bsky_turn[cat] % len(qs)]
     _bsky_turn[cat] += 1
+    _bsky_last_call = time.time()
     try:
         got = _bsky_search(cat, query)
     except urllib.error.HTTPError as e:
-        _bsky_cache[cat] = (time.time() + (BSKY_BACKOFF if e.code in (403, 429) else BSKY_GAP), [])
-        raise
-    _bsky_cache[cat] = (time.time() + BSKY_GAP, got)
+        # 막혔다고 가산점을 통째로 날리진 않는다 — 쉬는 동안은 마지막으로 받은 걸 계속 쓴다.
+        _bsky_keep(cat, time.time() + (BSKY_BACKOFF if e.code in (403, 429) else BSKY_GAP), got_at, last)
+        raise RuntimeError(f"HTTP {e.code} {_bsky_why(e)} — {int(BSKY_BACKOFF / 60)}분 쉼")
+    _bsky_keep(cat, time.time() + BSKY_GAP, time.time(), got)
     return [dict(x) for x in got]
+
+
+def _bsky_why(e):
+    """403 본문에서 이유 한 조각. 그냥 'Forbidden' 만 남으면 다음에 또 봐도 원인을 모른다."""
+    try:
+        body = _strip_tags(e.read().decode("utf-8", "ignore"))[:120]
+    except Exception:
+        return ""
+    return body.strip()
 
 
 def _bsky_search(cat, query):
@@ -375,7 +409,7 @@ def _safe(fn, *a, **kw):
     try:
         return fn(*a, **kw)
     except Exception as e:
-        _FAILED.append(f"{fn.__name__}: {str(e)[:40]}")
+        _FAILED.append(f"{fn.__name__}: {str(e)[:100]}")   # 40자면 403 이유가 잘려 원인을 못 봤다
         return []
 
 
