@@ -153,6 +153,66 @@ def _news(queries):
     return out
 
 
+# ── 매체 피드 직접 구독 ──────────────────────────────────────────
+#  구글뉴스는 '키워드에 걸린 것'만 준다 — 키워드를 안 스친 사건은 통째로 안 보인다.
+#  그래서 매체 피드를 그대로 받아 같은 _cluster 에 섞는다. 매체가 늘면 '몇 개 매체 보도'가
+#  제대로 세지므로, 건수만 느는 게 아니라 강도 판정도 같이 정확해진다.
+#  ★한경(hankyung.com/feed/economy)은 403 이라 뺐다(2026-09-18 실측).
+NEWS_FEEDS = {
+    "ai": [("Techmeme", "https://www.techmeme.com/feed.xml", "en")],
+    # ★Investing 은 news_25 를 쓴다 — news_285 는 2024-11-26 에 멈춘 죽은 피드다(2026-09-18 실측).
+    #   피드를 새로 넣을 땐 건수만 보지 말고 최신 pubDate 를 꼭 볼 것. 200 OK 로도 2년 전 걸 준다.
+    "econ": [("연합뉴스", "https://www.yna.co.kr/rss/economy.xml", "ko"),
+             ("매일경제", "https://www.mk.co.kr/rss/30100041/", "ko"),
+             ("Investing", "https://www.investing.com/rss/news_25.rss", "en"),
+             ("MarketWatch", "https://feeds.content.dowjones.io/public/rss/mw_topstories", "en")],
+}
+
+
+def _feed_ts(s):
+    """RFC822(대부분) + 'YYYY-MM-DD HH:MM:SS'(Investing) 둘 다. 못 읽으면 0.
+       ★0 이면 12시간 창에서 통째로 버려진다 — Investing 이 이걸로 전부 날아갔었다."""
+    from email.utils import parsedate_to_datetime
+    s = (s or "").strip()
+    try:
+        return parsedate_to_datetime(s).timestamp()
+    except Exception:
+        pass
+    m = re.match(r"(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})", s)
+    if m:
+        from datetime import timezone
+        return datetime(*map(int, m.groups()), tzinfo=timezone.utc).timestamp()
+    return 0.0
+
+
+def _rss(name, url, lang):
+    """매체 RSS 한 개 → news.fetch_keyword 와 같은 모양(_cluster 가 그대로 먹을 수 있게)."""
+    import xml.etree.ElementTree as ET
+    req = urllib.request.Request(url, headers={"User-Agent": BROWSER_UA})
+    root = ET.fromstring(urllib.request.urlopen(req, timeout=12).read())
+    out = []
+    for it in root.findall(".//item")[:60]:
+        ts = _feed_ts(it.findtext("pubDate", ""))
+        title = _strip_tags(it.findtext("title", ""))
+        if not title:
+            continue
+        out.append({"title": title, "link": (it.findtext("link", "") or "").strip(),
+                    "source": name, "lang": lang, "_ts": ts,
+                    "summary": _strip_tags(it.findtext("description", ""))[:300]})
+    return out
+
+
+def _feeds(cat):
+    """그 분야 매체 피드 전부. 하나가 죽어도 나머지는 온다 — 죽은 건 '확인 못 한 소스'로 남는다."""
+    out, cut = [], time.time() - NEWS_WINDOW_H * 3600
+    for name, url, lang in NEWS_FEEDS.get(cat, []):
+        try:
+            out += [it for it in _rss(name, url, lang) if (it.get("_ts") or 0) >= cut]
+        except Exception as e:
+            _FAILED.append(f"{name}: {str(e)[:100]}")
+    return out
+
+
 def _level_from_cluster(n_sources, event_hit, lv2, lv3):
     lv = 3 if n_sources >= lv3 else 2 if n_sources >= lv2 else 1
     if event_hit and n_sources >= 2:     # 매체 1곳짜리는 '급락' 한 단어로 안 올린다
@@ -471,6 +531,7 @@ def collect_ai():
     # 2) 구글뉴스 — 같은 사건을 여러 매체가 쓰면 강도↑
     items = _news([("OpenAI OR Anthropic OR Gemini OR DeepSeek OR Nvidia AI when:1d", "en"),
                    ("인공지능 OR 생성형AI OR 오픈AI OR 앤트로픽 OR 엔비디아 when:1d", "ko")])
+    items += _feeds("ai")
     for g in _cluster(items):
         if not AI_TOPIC.search(g["title"]):
             continue
@@ -517,6 +578,7 @@ def collect_econ():
     # 2) 뉴스 — 사건어 + 매체 수
     items = _news([("경제 OR 금리 OR 환율 OR 증시 when:1d", "ko"),
                    ("Fed OR stock market OR tariff OR recession when:1d", "en")])
+    items += _feeds("econ")
     for g in _cluster(items):
         n = len(g["sources"])
         ev = bool(ECON_EVENT.search(g["title"]))
