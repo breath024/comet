@@ -53,17 +53,19 @@ def _flags():
     return getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
-def ask_claude(prompt, timeout=300, tools=""):
+def ask_claude(prompt, timeout=300, tools="", cwd=None):
     """tools="" 면 도구를 다 끈다(회의용). "WebSearch" 처럼 주면 그것만 열린다.
        ★--tools 로 열기만 하면 비대화형에선 권한이 거부돼 빈손으로 돌아온다(실측) —
-         --allowed-tools 로 미리 허락까지 같이 줘야 실제로 검색한다."""
+         --allowed-tools 로 미리 허락까지 같이 줘야 실제로 검색한다.
+       cwd=None 이면 임시폴더에서 돈다(회의용 — 프로젝트 CLAUDE.md 가 안 끌려오게).
+       cwd=경로 를 주면 그 폴더에서 돈다(위임용 — 그 프로젝트의 CLAUDE.md·파일을 봐야 하니까)."""
     exe = shutil.which("claude") or os.path.expanduser(r"~\.local\bin\claude.exe")
     args = [exe, "-p", "--no-session-persistence", "--output-format", "text", "--tools", tools]
     if tools:
         args += ["--allowed-tools", tools]
-    with tempfile.TemporaryDirectory(prefix="comet_claude_") as cwd:   # 프로젝트 CLAUDE.md 안 끌려오게
+    with tempfile.TemporaryDirectory(prefix="comet_claude_") as tmp:
         r = subprocess.run(args,
-                           input=prompt.encode("utf-8"), capture_output=True, cwd=cwd,
+                           input=prompt.encode("utf-8"), capture_output=True, cwd=(cwd or tmp),
                            env=_child_env(), timeout=timeout, creationflags=_flags())
     out = r.stdout.decode("utf-8", "ignore").strip()
     if r.returncode != 0 or not out:

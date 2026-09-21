@@ -32,13 +32,26 @@ except Exception:
 GATEKEEPER = "gemma4:12b"         # 문지기 = 항상 가벼운 모델
 
 # 등급별 모델 + keep_alive(이만큼 안 쓰면 VRAM 에서 자동 언로드)
+#  ★2026-09-22 — 무거운 등급을 Q4(18GB) 에서 **Q3_K_M 양자화(13GB)** 로 내렸다.
+#  왜: Q4 26b 는 16GB 에 안 들어가 아야카TTS·Whisper 가 떠 있으면 로딩 자체가 죽고,
+#      그러면 클라우드 우회로 빠져 **도구를 하나도 못 쓰는 답**이 나왔다(9/22 새벽 로그).
+#      "행동을 못 한다" 의 정체가 이거였다. 호윤 지시: *"무거운 등급중에 양자화로 가벼운걸 가져와."*
+#  실측(9/22, 다른 앱 켜둔 상태 · num_ctx 32768):
+#      gemma4:26b            Q4  18GB → 안 올라감 / 올라가도 CPU 스필
+#      huihui …26b … q3_k_m  Q3  13GB → **100% GPU** · 두 번째 호출 2.3초 · 26.9 tok/s
+#      (num_ctx 를 안 주면 기본 131072 라 같은 모델도 20% CPU 로 흘러 느려진다 → NUM_CTX 고정)
+#  abliterated(검열해제) 판인 건 의도 — 호윤이 COMET 에 요구한 "설교·거절 없는 대화" 와 맞는다.
+#  ⚠️ 이 판엔 vision 이 없다. 화면인식은 `vision.py` 의 VISION_MODEL(gemma4:12b) 이 따로 쓴다.
+HEAVY_MODEL = "huihui-gemma4-abliterated:26b-a4b-i1-q3_k_m"
+NUM_CTX = 32768          # 안 주면 ollama 가 모델 최대치(131072)로 잡아 KV 가 VRAM 을 먹는다
+
 TIERS = {
     "light":  {"model": "gemma4:12b",  "keep_alive": "10m", "desc": "잡담·즉답"},
-    "medium": {"model": "gemma4:26b",  "keep_alive": "5m",  "desc": "기본 작업"},
+    "medium": {"model": HEAVY_MODEL,   "keep_alive": "5m",  "desc": "기본 작업"},
     # heavy 가 medium 과 같은 모델인 건 실수가 아니다 — 31b(dense 18.5GB)는 16GB 밖으로
-    # 넘쳐 한 문장에 117초였다(26b 는 7.9초). 26b 는 MoE(활성 4B)라 크기 대비 빠르다.
+    # 넘쳐 한 문장에 117초였다. 26b 는 MoE(활성 4B)라 크기 대비 빠르다.
     # 지금 heavy 를 가르는 건 모델이 아니라 keep_alive(30s = 쓰고 바로 VRAM 반납)뿐이다.
-    "heavy":  {"model": "gemma4:26b",  "keep_alive": "30s", "desc": "신중한 큰 작업"},
+    "heavy":  {"model": HEAVY_MODEL,   "keep_alive": "30s", "desc": "신중한 큰 작업"},
 }
 
 HISTORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "comet_history.json")
@@ -148,7 +161,7 @@ def _gen(model, messages, *, stream=False, keep_alive=None, fmt=None,
         if prov is not None:
             return cloud.chat(prov, messages, stream=stream,
                               temperature=temperature, num_predict=num_predict)
-    opts = {}
+    opts = {"num_ctx": NUM_CTX}      # 안 주면 모델 최대 컨텍스트로 잡혀 KV 가 VRAM 을 먹는다(9/22)
     if temperature is not None:
         opts["temperature"] = temperature
     if num_predict:
@@ -415,6 +428,15 @@ HOLD_KW = ("보유 읽어", "보유종목 읽", "포트 스샷", "보유 스샷"
 # (예전엔 이 계열이 아예 없어서 "텔레그램으로 보내줘"가 일반 대화로 흘러
 #  실제로는 안 보내면서 "보냈다"고 답을 지어내는 할루시네이션이 났다)
 TELEGRAM_KW = ("텔레그램", "텔레그람", "폰으로 보내", "메세지로 보내", "메시지로 보내")
+
+# 위임 신호 — 말로 설명하는 게 아니라 **실제로 코드를 고치게** 해야 할 때(2026-09-22)
+#   전에는 이 길이 없어서 "서브에이전트 띄우고 자가수리해봐" 가 일반 대화로 흘렀고,
+#   부품(coder_bridge·debate.ask_claude)이 다 있는데도 "권한이 없습니다" 라고 답했다.
+#   ★키워드는 '메뉴에 올릴지'만 정한다 — 고르는 건 동작선택기다(과발동 위험 낮음).
+DELEGATE_KW = ("서브에이전트", "서브에이젼트", "에이전트띄", "에이전트를띄", "자가수리", "스스로고쳐",
+               "코딩에이전트", "클로드한테", "클로드에게", "클로드시켜", "아스트라한테",
+               "직접고쳐", "네가고쳐", "니가고쳐", "고쳐놔", "고쳐줘", "수정해줘", "고쳐봐",
+               "구현해", "만들어줘", "짜줘", "스크립트", "리팩터", "버그잡", "버그고", "에러고쳐")
 # ── 기능 레지스트리 (단일 출처) ────────────────────────────────
 # 계열(키워드 그룹) → 그 계열이 DECIDE 후보로 올리는 동작들. 여기 한 줄이면
 #   (1) use_tools 게이트(TOOL_KW)  (2) DECIDE 후보 명세  둘 다 자동 반영된다.
@@ -433,6 +455,7 @@ FAMILIES = (
          "analyze_stock", "market_log", "get_financials")),
     ("holding", HOLD_KW,    ("read_holdings",)),
     ("telegram", TELEGRAM_KW, ("send_telegram",)),
+    ("delegate", DELEGATE_KW, ("delegate",)),
 )
 # 도구 게이트 = 모든 계열 키워드의 합집합 (기존 TOOL_KW 와 동일 집합)
 TOOL_KW = tuple(k for _, kw, _ in FAMILIES for k in kw)
@@ -472,6 +495,7 @@ ACTION_SPECS = {
     "get_financials": 'get_financials: 종목의 재무제표·실적·밸류에이션 숫자(매출성장·마진·PER·PEG·목표주가·어닝 서프라이즈). 필드 ticker/query(예: "엔비디아 실적","테슬라 재무제표","PLTR PER").',
     "read_holdings": 'read_holdings: 지금 화면에 띄운 증권사 보유종목(잔고) 화면을 읽어 내 보유를 추출. 필드 없음(예: "내 보유 읽어","포트폴리오 스샷 분석").',
     "send_telegram": 'send_telegram: 텔레그램(폰)으로 실제 메시지 전송. 필드 content(무엇을 보낼지 — 예: "미장 브리핑","방금 그 답변"). 직전 COMET 답변을 보내라는 뜻이면 content 생략.',
+    "delegate": 'delegate: 코드·파일을 실제로 고치거나 만드는 일을 서브에이전트에게 맡겨 진짜로 실행한다(말로 설명하는 게 아니라 실행). 자가수리·버그수정·기능 구현·스크립트 작성·일괄 파일작업. 필드 task(무엇을 해달라는 건지 한 문장), target(대상 프로젝트나 폴더가 분명하면 — 예: "코멧","RawCut","바탕화면"; 없으면 생략)',
     "none": "none: 위 어디에도 안 맞는 일반 대화",
 }
 
@@ -500,6 +524,9 @@ DECIDE_RULES = """
 (헷갈리면: 종목 '가격 숫자'면 get_stock, 종목 '판단·전망'이면 analyze_stock, '내 PC 파일'이면 search_files, 그 밖 인터넷 정보면 web_search.)
 '텔레그램/폰으로 보내줘'는 send_telegram — 보낼 내용을 같이 말했으면(예: "미장 브리핑 보내줘") content에 그 내용을 적고,
 그냥 "보내줘/보내놔"만 있으면 직전 답변을 보내라는 뜻이니 content는 생략해라.
+**코드나 파일을 '실제로 고치라/만들라'는 지시는 delegate** — 서브에이전트가 진짜로 실행한다
+(예: "이거 고쳐줘","자가수리해봐","서브에이전트 띄워서 ~","스크립트 하나 짜줘","버그 잡아줘").
+설명·방법만 물으면 delegate 가 아니라 none 이다(예: "이거 왜 안 되는 거야","어떻게 고쳐?").
 출력 예: {"action":"get_fx","query":"원달러"}
 출력 예: {"action":"get_crypto","query":"비트코인"}
 출력 예: {"action":"web_search","query":"서울 부산 KTX 소요시간 요금 2026"}
@@ -778,6 +805,7 @@ class Comet:
         self.game_mode = "auto"       # auto|on|off — 게임 중 가벼운 모델로 (GPU 양보)
         self.auto_approve = False     # 코딩 에이전트 파일수정/셸 자동승인 여부 (콘솔=False, 데몬=True)
         self._pending_coding = None   # ask 로 멈춘 코딩 세션 {box, messages}
+        self._pending_shell  = None   # 셸 앞에서 멈춘 위임 {task, target} — "셸 허용" 이면 재실행
         # 자율/상주 모드(먼저말걸기·부르면듣기) — 로직은 autonomy.py 에 격리. 저장된 모드 복원.
         import autonomy
         self.autonomy = autonomy.Autonomy(
@@ -1128,6 +1156,20 @@ class Comet:
             return ("데몬 재시작 신호 — 이 응답 직후 최신 코드로 재기동해. "
                     "watchdog 켜놨으면 자동 부활, 폰은 몇 초 뒤 다시 말 걸어봐.")
 
+        # ── 셸 허용: 위임했던 일이 셸 앞에서 멈췄을 때, 호윤이 허락하면 셸 켜고 다시 ──
+        #   호윤 지시(9/22) "파일수정까지 자동, 셸은 확인받고" 의 '확인' 쪽 절반.
+        if getattr(self, "_pending_shell", None) and t.replace(" ", "") in (
+                "셸허용", "쉘허용", "셸켜", "쉘켜", "셸돌려", "명령허용", "허용", "돌려", "그래돌려"):
+            ps = self._pending_shell
+            self._pending_shell = None
+            self.history.add("user", text)
+            r = self._delegate(ps["task"], ps.get("target"), shell_ok=True)
+            full = r.get("text") or r.get("msg", "못 했어.")
+            print(f"\nCOMET:\n{full}")
+            self.history.add("assistant", full)
+            self.history.save()
+            return full
+
         # ── 코딩 세션 이어받기: ask 로 멈춘 작업이 있으면 다음 입력으로 resume ──
         if self._pending_coding:
             pc = self._pending_coding
@@ -1179,11 +1221,28 @@ class Comet:
                 print(f"  · 문지기: {tier} ({cfg['model']}){flag} — {reason}")
                 if auto_web:
                     print(f"  · 자동 웹검색 발동 — 키워드 없이 사실 조회 판단: {auto_web}")
-                    full = self._chat_with_tools(cfg, text, forced=("web_search", auto_web))
-                elif use_tools:
-                    full = self._chat_with_tools(cfg, text)
-                else:
-                    full = self._chat_stream(cfg)
+
+                def _run(c):
+                    if auto_web:
+                        return self._chat_with_tools(c, text, forced=("web_search", auto_web))
+                    if use_tools:
+                        return self._chat_with_tools(c, text)
+                    return self._chat_stream(c)
+
+                try:
+                    full = _run(cfg)
+                except Exception as e:
+                    #  ★2026-09-22 — 무거운 등급이 VRAM 이 없어 못 뜨면 **클라우드로 새지 말고
+                    #    light(12b) 로 내려서 다시 돌린다.** 클라우드 우회(_cloud_reply)는 도구·기억을
+                    #    통째로 못 써서 "일정 확인 못 합니다" 같은 답이 나온다 — 등급을 내리는 쪽이
+                    #    답 품질은 조금 낮아도 **시킨 걸 실제로 실행**한다. 호윤 지시(9/22).
+                    if tier == "light" or not _is_local_down(e):
+                        raise
+                    print(f"\n  · {cfg['model']} 이 못 떴다 → light 로 내려서 다시 ({str(e)[:70]})")
+                    light = dict(TIERS["light"])
+                    if _ka:
+                        light["keep_alive"] = _ka
+                    full = _run(light)
         except Exception as e:
             #   게임 중 VRAM 이 없어 모델이 아예 못 뜨는 일이 잦다 — 그때 대화를 끊지 않고 우회한다
             full = self._cloud_reply(text) if _is_local_down(e) else ""
@@ -1310,6 +1369,123 @@ class Comet:
         print()
         return full
 
+    # ═══════════════════════════════════════════════════════════
+    #  서브에이전트 위임 — 말이 아니라 실제로 고치게 한다 (2026-09-22)
+    #
+    #  ★호윤: *"얘는 내가 뭘 원하는지만 잘 알고 실행만 해주면돼,
+    #           서브 에이젼트 쓰는 기능이 있어야 될 거 같은데"*
+    #  부품은 이미 다 있었다 — coder_bridge(로컬 ReAct·백업) + debate.ask_claude(헤드리스 클로드).
+    #  없던 건 **자연스러운 말에서 거기로 가는 길**뿐이라, 동작선택기에 delegate 를 만들어 여기로 모은다.
+    #
+    #  호윤이 정한 두 가지(9/22):
+    #   1) 엔진은 일에 따라 가른다 — 코드·판단은 클로드 CLI, 단순·반복 파일작업은 로컬 COMET-Coder.
+    #   2) 권한은 **파일수정까지 자동(백업 있음), 셸은 확인받고.**
+    #      → 클로드: Read/Edit/Write/Glob/Grep 만 열고 Bash 는 안 연다.
+    #      → 로컬:  쓰기는 승인, 셸 요청이 나오면 거기서 멈추고 호윤에게 물어본다.
+    #      둘 다 "셸 허용" 이라고 답하면 셸을 켜고 같은 일을 다시 돌린다(_pending_shell).
+    # ═══════════════════════════════════════════════════════════
+    #  로컬로 보낼 일 — 판단이 필요 없는 단순·반복 파일작업
+    _LOCAL_TASK_KW = ("정리", "이름바꾸", "이름 바꾸", "일괄", "모아", "복사", "옮겨",
+                      "세어", "개수", "목록", "변환", "지워", "삭제")
+    #  클로드로 보낼 일 — 코드를 읽고 판단해야 하는 것
+    _CLAUDE_TASK_KW = ("고쳐", "수리", "버그", "에러", "안 돼", "안돼", "구현", "기능", "추가",
+                       "리팩터", "테스트", "코드", "함수", "스크립트", "만들")
+
+    #  대상 폴더 — 말에서 프로젝트를 못 집으면 바탕화면(coder_bridge 기본값)
+    _DELEGATE_ROOTS = {
+        "코멧": os.path.dirname(os.path.abspath(__file__)),
+        "comet": os.path.dirname(os.path.abspath(__file__)),
+        "너": os.path.dirname(os.path.abspath(__file__)),      # "너 자가수리해봐"
+        "자가수리": os.path.dirname(os.path.abspath(__file__)),
+    }
+
+    def _delegate_root(self, task, target):
+        """위임할 작업폴더를 고른다. 못 고르면 None(=coder_bridge 기본값=바탕화면)."""
+        hay = (str(target or "") + " " + task).replace(" ", "").lower()
+        for key, path in self._DELEGATE_ROOTS.items():
+            if key in hay:
+                return path
+        # "@경로" 를 직접 적어줬으면 그대로
+        m = re.search(r"@([A-Za-z]:\\[^\s\"']+)", task)
+        if m and os.path.isdir(m.group(1)):
+            return m.group(1)
+        return None
+
+    def _delegate_engine(self, task):
+        """클로드 CLI 로 보낼지 로컬 COMET-Coder 로 보낼지. 호윤 지시: 일에 따라 가른다."""
+        flat = task.replace(" ", "")
+        if any(k.replace(" ", "") in flat for k in self._CLAUDE_TASK_KW):
+            return "claude"
+        if any(k.replace(" ", "") in flat for k in self._LOCAL_TASK_KW):
+            return "coder"
+        return "claude"          # 애매하면 실력 있는 쪽 — 실행이 목적이니까
+
+    #  클로드에게 열어줄 도구. ★Bash 는 일부러 뺐다(셸은 호윤 확인) — 호윤 지시(9/22).
+    _CLAUDE_TOOLS      = "Read Edit Write Glob Grep"
+    _CLAUDE_TOOLS_SHELL = "Read Edit Write Glob Grep Bash"
+
+    def _delegate(self, task, target=None, shell_ok=False):
+        """서브에이전트에게 실제 작업을 시키고, 한 일을 텍스트로 돌려준다."""
+        root = self._delegate_root(task, target)
+        engine = self._delegate_engine(task)
+        where = root or "바탕화면"
+        print(f"  [위임] {engine} · {where} · {task[:60]}")
+
+        if engine == "claude":
+            import debate
+            import coder_bridge
+            cwd = root or coder_bridge.DEFAULT_ROOT
+            tools = self._CLAUDE_TOOLS_SHELL if shell_ok else self._CLAUDE_TOOLS
+            prompt = (
+                f"너는 호윤의 서브에이전트다. 아래 일을 **실제로 해라**(설명만 하지 말고 파일을 고쳐라).\n"
+                f"작업폴더: {cwd}\n"
+                + ("" if shell_ok else
+                   "셸(Bash)은 안 열려 있다. 명령 실행이 꼭 필요하면 고치지 말고 "
+                   "무엇을 왜 돌려야 하는지만 한 줄로 답해라.\n")
+                + "끝나면 **무엇을 어떻게 고쳤는지 한국어로 5줄 이내**로 요약해라. 군더더기·칭찬 금지.\n\n"
+                f"[할 일]\n{task}")
+            try:
+                out = debate.ask_claude(prompt, timeout=900, tools=tools, cwd=cwd)
+            except Exception as e:
+                return {"ok": False, "msg": f"클로드 서브에이전트 실패: {str(e)[:200]}"}
+            text = f"🤖 서브에이전트(클로드) · {where}\n\n{out}"
+            if not shell_ok:
+                self._pending_shell = {"task": task, "target": target}
+                text += "\n\n(셸은 안 열어놨어. 명령을 돌려야 하면 '셸 허용'이라고 해 — 셸 켜고 다시 돌릴게.)"
+            return {"ok": True, "text": text}
+
+        # ── 로컬 COMET-Coder ──
+        import coder_bridge
+        import dev_tools
+        asked_shell = []
+
+        def _confirm(desc):
+            if desc.startswith("셸 실행:") or desc.startswith("⚠⚠"):
+                asked_shell.append(desc)
+                return False                    # 셸은 호윤 확인 전엔 안 돌린다
+            return True                          # 읽기·수정은 자동 (.comet_bak 백업이 안전망)
+
+        try:
+            if shell_ok:
+                result = coder_bridge.run_text_full(task, root=root, auto_approve=True)
+            else:
+                box = dev_tools.ToolBox(root=root or coder_bridge.DEFAULT_ROOT,
+                                        confirm=_confirm, auto_approve=False)
+                result = coder_bridge.run_text_full(task, root=root, box=box,
+                                                    auto_approve=False)
+        except Exception as e:
+            return {"ok": False, "msg": f"로컬 서브에이전트 실패: {str(e)[:200]}"}
+
+        text = f"🤖 서브에이전트(로컬) · {where}\n\n{result['text']}"
+        if result.get("stopped") == "ask" and result.get("messages"):
+            self._pending_coding = {"box": result["box"], "messages": result["messages"]}
+            text += "\n\n❓ 답변하면 이어서 작업해."
+        elif asked_shell:
+            self._pending_shell = {"task": task, "target": target}
+            text += ("\n\n⏸ 셸 명령이 필요해서 거기서 멈췄어: " + asked_shell[0][:120]
+                     + "\n'셸 허용'이라고 하면 셸 켜고 처음부터 다시 돌릴게.")
+        return {"ok": True, "text": text}
+
     # ── 로컬이 못 뜰 때 구독 CLI 로 대신 답하기 ──────────────────
     def _cloud_reply(self, text):
         """게임 중 VRAM 고갈 등으로 모델이 아예 안 올라올 때의 우회로.
@@ -1392,6 +1568,9 @@ class Comet:
             result = files.dispatch(action, {"query": plan.get("query", text)})
         elif action == "trade_stats":
             result = projects.dispatch(action, {"source": plan.get("source", text)})
+        elif action == "delegate":
+            result = self._delegate((plan.get("task") or plan.get("query") or text).strip(),
+                                    plan.get("target"))
         elif action == "list_sources":
             result = projects.dispatch(action, {})
         elif action == "brief":
@@ -1478,6 +1657,13 @@ class Comet:
 
         # 3-스냅샷) 미장 스냅샷은 prices 가 만든 실측 텍스트 그대로 — LLM 안 거침(날조 0)
         if action == "get_market" and result is not None and result.get("ok"):
+            msg = result["text"]
+            print(f"\nCOMET:\n{msg}")
+            return msg
+
+        # 3-위임) 서브에이전트가 한 일(고친 파일·진행 기록)은 사실 기록이다 — LLM 이 옮겨 적으면
+        #   안 한 일을 했다고 쓰거나 파일명이 흐트러진다. 그대로 내보낸다(2026-09-22).
+        if action == "delegate" and result is not None and result.get("ok"):
             msg = result["text"]
             print(f"\nCOMET:\n{msg}")
             return msg

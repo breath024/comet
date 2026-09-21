@@ -113,14 +113,16 @@ def run_text(task, root=None, skill=None, auto_approve=True, max_steps=20):
                          max_steps=max_steps)["text"]
 
 
-def run_text_full(task, root=None, skill=None, auto_approve=True, max_steps=20):
+def run_text_full(task, root=None, skill=None, auto_approve=True, max_steps=20, box=None):
     """run_text 와 동일하되 멈춤 상태(stopped, messages, box)도 함께 반환.
-       stopped="ask" 일 때 resume_text() 로 이어받을 수 있다."""
+       stopped="ask" 일 때 resume_text() 로 이어받을 수 있다.
+       box 를 직접 주면 그걸 쓴다 — 승인 규칙을 따로 건 위임 경로용
+       (comet.py `_delegate`: 파일수정은 자동, 셸은 호윤 확인. 2026-09-22)."""
     if skill == "council":
         return {"text": run_council_text(task, root), "stopped": "done",
                 "box": None, "messages": None}
     root = root or DEFAULT_ROOT
-    box = dev_tools.ToolBox(root=root, auto_approve=auto_approve)
+    box = box or dev_tools.ToolBox(root=root, auto_approve=auto_approve)
     prompt = skills.load(skill) if skill else ""
     lines = [f"🛠 코딩 에이전트 · 폴더={root}" + (f" · 스킬={skill}" if skill else "")]
     try:
