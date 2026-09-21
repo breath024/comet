@@ -704,12 +704,25 @@ def collect_econ(asked=False):
             lv = 3 if a >= t3 else 2 if a >= t2 else 0
             if not lv:
                 continue
-            verb = "급등" if pct > 0 else "급락"
+            up = pct > 0
+            verb = "급등" if up else "급락"          # 화면 제목 — 짧게
+            #  ★2026-09-22 호윤: *"1% 급등했어. 도 아니고 1% 올라갔어. 급등 이러니까 듣기 좀 그러네"*
+            #  문턱(t2)만 넘으면 전부 '급등' 이라 1%대에도 급등이라 읽혔다. 귀로 듣는 말은 폭에 맞춰 고른다.
+            #  t3(굵직한 단계) 넘을 때만 급등/급락, 그 아래는 그냥 올랐어/내렸어.
+            if a >= t3 * 1.3:
+                said = "급등했어" if up else "급락했어"
+            elif a >= t3:
+                said = "많이 올랐어" if up else "많이 빠졌어"
+            else:
+                said = "올랐어" if up else "내렸어"
+            ko = f"{name}{_ga(name)} {a:.1f}% {said}"
             if sym == "KRW=X":
-                verb = "원화 약세" if pct > 0 else "원화 강세"
+                verb = "원화 약세" if up else "원화 강세"
+                ko = (f"원달러 환율이 {a:.1f}% 올라서 원화가 약해졌어" if up
+                      else f"원달러 환율이 {a:.1f}% 내려서 원화가 강해졌어")
             found.append({"cat": "econ", "level": lv, "lang": "ko",
                           "title": f"{name} {pct:+.2f}% {verb}",
-                          "ko": f"{name}{_ga(name)} {pct:+.1f}% 움직였어 ({verb})",
+                          "ko": ko,
                           "why": "Yahoo 실측", "url": "",
                           # 같은 날·같은 종목은 한 사건 — 단계가 오를 때만 다시 알린다
                           "key": f"mkt:{sym}:{datetime.now():%Y-%m-%d}",

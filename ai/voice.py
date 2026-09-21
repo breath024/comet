@@ -53,7 +53,7 @@ SAMPLE_RATE  = 16000
 def clean_for_speech(text: str) -> str:
     text = re.sub(r"```.*?```", " 자세한 코드는 화면을 봐. ", text, flags=re.DOTALL)
     text = re.sub(r"`[^`]*`", "", text)              # 인라인 코드
-    text = re.sub(r"https?://\S+", " 링크 ", text)   # URL
+    text = re.sub(r"https?://[^\s)\]]+", " 링크 ", text)   # URL — 닫는 괄호는 안 먹는다(링크 표기 복구용)
     #  LaTeX — 페르소나로 막아도 모델이 샌다(2026-09-18 로그). 소리로는 "달러 케이 일" 로 읽혀 제일 심하다.
     #  자주 나오는 것만 말로 바꾸고, 나머지 \명령·수식 구분자는 지운다. ★$100 같은 금액은 살린다.
     for pat, word in ((r"\\times|\\cdot", " 곱하기 "), (r"\\div", " 나누기 "),
@@ -65,7 +65,14 @@ def clean_for_speech(text: str) -> str:
     text = re.sub(r"\$([^$\d][^$]*?)\$", r" \1 ", text)      # $수식$ — 구분자만 벗긴다($100 은 안 건드림)
     text = re.sub(r"\\\(|\\\)|\\\[|\\\]", " ", text)         # \( \) \[ \]
     text = re.sub(r"[{}^]", " ", text)
-    text = re.sub(r"[#*_>~|\[\]()\-•·]", " ", text)  # 마크다운 기호·불릿
+    #  괄호는 기호만 지우면 안엣말이 그대로 읽힌다 — "일 퍼센트 움직였어 급등", "출처 일 사".
+    #  ★2026-09-22 호윤: *"괄호에 있는건 안 읽는게 낫지 않냐, 사람같이 말하는것 같지가 않아."*
+    #  괄호 안은 곁다리(부연·출처)라 소리로는 통째로 버린다. 링크 표기는 글자만 살린다.
+    text = re.sub(r"\[([^\]]*)\]\s*\(\s*링크\s*\)", r"\1", text)   # [제목](링크) → 제목
+    for _ in range(2):                                             # 한 겹 중첩까지
+        text = re.sub(r"[(（][^()（）]{0,120}[)）]", " ", text)
+        text = re.sub(r"\[[^\[\]]{0,120}\]", " ", text)
+    text = re.sub(r"[#*_>~|\[\]()（）\-•·]", " ", text)  # 남은 짝 없는 괄호·마크다운 기호·불릿
     text = text.replace("\n", " ")
     text = text.replace(",", " ").replace("、", " ")  # 쉼표 제거 → 끊김 완화
     text = re.sub(r"\s+", " ", text).strip()
