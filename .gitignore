@@ -69,3 +69,6 @@ ai/debate_last.json
 ai/chat_win_state.json
 ai/calendar_config.json
 ai/logs/daemon-*.log
+
+# --- COMET 실행 중 캐시 ---
+ai/hangul_cache.json

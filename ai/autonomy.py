@@ -499,6 +499,8 @@ class TalkMode(_Mode):
                 pass
 
         try:
+            import voice
+            voice.ducker.remember_front()     # 창이 맨 앞을 가져가기 전에 — 이 앱 소리는 안 줄인다
             py = sys.executable.replace("python.exe", "pythonw.exe")
             if not os.path.exists(py):
                 py = sys.executable
@@ -510,7 +512,6 @@ class TalkMode(_Mode):
 
             # 1) 말 — 타이핑을 시작하거나 창을 닫으면 바로 멈춘다
             heard = ""
-            import voice
             if self._ear is None:
                 state("loading")
                 self._preload()

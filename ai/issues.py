@@ -856,6 +856,46 @@ def _first_korean_sentence(t):
 #  한국어로 — 로컬 LLM(사고 끔). ko = 제목 한 줄, detail = 내용 1~2문장
 #  GPU 바쁘면 LLM 을 건너뛴다 — 원문이 한국어면 첫 문장을 내용으로 쓴다.
 # ═══════════════════════════════════════════════════════════════
+def _is_korean(t):
+    """한글이 글자의 30% 이상이면 한국어로 친다 — "OpenAI 가 ~했대" 는 한국어, 영어 제목은 아님."""
+    han = len(re.findall(r"[가-힣]", t or ""))
+    return han >= 2 and han >= 0.3 * len(re.findall(r"[A-Za-z가-힣]", t or ""))
+
+
+def _ko_prompt(todo):
+    listing = "\n".join(f"{i}. 제목: {it['title']}"
+                        + (f"\n   ※이건 {it['frame']}이다." if it.get("frame") else "")
+                        + (f"\n   본문 앞부분: {it['lead']}" if it.get("lead") else "")
+                        for i, it in enumerate(todo))
+    return ("아래 뉴스마다 두 가지를 한국어로 써라.\n"
+            "ko: 제목을 한 문장(35자 이내)으로. 반말로 끝내라(예: '~했대', '~나왔어').\n"
+            "※ 표시가 있으면 그게 뭔지 ko 에서 드러내라 — 사실 보도가 아닌 걸 단정으로 읽으면 안 된다.\n"
+            "  · 개인 의견: '누구누구라는 유저가 ~래' 처럼 누가 한 말인지 밝히고, "
+            "끝에 '개인 의견이야' 를 붙여라(35자 넘어도 된다).\n"
+            "  · 논문: '~라는 논문이 나왔어' 또는 '~주제 논문인데 ~라는 내용이야' 처럼 써라.\n"
+            "detail: 본문 앞부분이 있으면 핵심 내용을 1~2문장(90자 이내)으로 — 숫자·누가·무엇을 우선. "
+            "제목에 이미 있는 말을 되풀이하지 말고, 제목에 없는 정보(수치·배경·이유)를 써라. "
+            "본문 앞부분이 없거나 더할 정보가 없으면 빈 문자열. 반말로.\n"
+            "과장·추측 금지. 주어진 제목·본문에 없는 사실은 절대 쓰지 마라. "
+            "제목이 질문이면 ko 도 질문으로 끝내라.\n"
+            'JSON 만: {"items":[{"i":0,"ko":"...","detail":"..."}]}\n\n' + listing)
+
+
+def _apply_ko(todo, raw):
+    """모델 답(JSON 글)을 항목에 채운다. 앞뒤 군말·코드펜스가 붙어 와도 { } 만 떼어 읽는다."""
+    m = re.search(r"\{.*\}", raw or "", re.S)
+    if not m:
+        return
+    for row in json.loads(m.group()).get("items", []):
+        i = int(row.get("i", -1))
+        if not 0 <= i < len(todo):
+            continue
+        if (row.get("ko") or "").strip() and not todo[i].get("ko"):
+            todo[i]["ko"] = row["ko"].strip()
+        if (row.get("detail") or "").strip() and todo[i].get("lead"):
+            todo[i]["detail"] = row["detail"].strip()
+
+
 def _koreanize(items, busy=False):
     todo = [it for it in items if not it.get("ko") or (it.get("lead") and not it.get("detail"))]
     if not todo:
@@ -864,40 +904,25 @@ def _koreanize(items, busy=False):
         for it in todo:
             if it.get("lead") and not it.get("detail"):
                 it["detail"] = _first_korean_sentence(it["lead"])
-        _frame_fallback(todo)
-        return
-    try:
-        import ollama
-        listing = "\n".join(f"{i}. 제목: {it['title']}"
-                            + (f"\n   ※이건 {it['frame']}이다." if it.get("frame") else "")
-                            + (f"\n   본문 앞부분: {it['lead']}" if it.get("lead") else "")
-                            for i, it in enumerate(todo))
-        prompt = ("아래 뉴스마다 두 가지를 한국어로 써라.\n"
-                  "ko: 제목을 한 문장(35자 이내)으로. 반말로 끝내라(예: '~했대', '~나왔어').\n"
-                  "※ 표시가 있으면 그게 뭔지 ko 에서 드러내라 — 사실 보도가 아닌 걸 단정으로 읽으면 안 된다.\n"
-                  "  · 개인 의견: '누구누구라는 유저가 ~래' 처럼 누가 한 말인지 밝히고, "
-                  "끝에 '개인 의견이야' 를 붙여라(35자 넘어도 된다).\n"
-                  "  · 논문: '~라는 논문이 나왔어' 또는 '~주제 논문인데 ~라는 내용이야' 처럼 써라.\n"
-                  "detail: 본문 앞부분이 있으면 핵심 내용을 1~2문장(90자 이내)으로 — 숫자·누가·무엇을 우선. "
-                  "제목에 이미 있는 말을 되풀이하지 말고, 제목에 없는 정보(수치·배경·이유)를 써라. "
-                  "본문 앞부분이 없거나 더할 정보가 없으면 빈 문자열. 반말로.\n"
-                  "과장·추측 금지. 주어진 제목·본문에 없는 사실은 절대 쓰지 마라. "
-                  "제목이 질문이면 ko 도 질문으로 끝내라.\n"
-                  'JSON 만: {"items":[{"i":0,"ko":"...","detail":"..."}]}\n\n' + listing)
-        r = ollama.Client(timeout=120).chat(
-            model=SUMMARY_MODEL, format="json", think=False, keep_alive="2m",
-            options={"temperature": 0, "num_predict": 2000},
-            messages=[{"role": "user", "content": prompt}])
-        for row in json.loads(r["message"]["content"]).get("items", []):
-            i = int(row.get("i", -1))
-            if not 0 <= i < len(todo):
-                continue
-            if (row.get("ko") or "").strip() and not todo[i].get("ko"):
-                todo[i]["ko"] = row["ko"].strip()
-            if (row.get("detail") or "").strip() and todo[i].get("lead"):
-                todo[i]["detail"] = row["detail"].strip()
-    except Exception:
-        pass
+    else:
+        try:
+            import ollama
+            r = ollama.Client(timeout=120).chat(
+                model=SUMMARY_MODEL, format="json", think=False, keep_alive="2m",
+                options={"temperature": 0, "num_predict": 2000},
+                messages=[{"role": "user", "content": _ko_prompt(todo)}])
+            _apply_ko(todo, r["message"]["content"])
+        except Exception:
+            pass
+    #  ★영어 제목이 한국어 한 줄 없이 남으면 영어로 읽힌다(2026-09-23 호윤: "뉴스 긁어왔을때 영어로 말하는데").
+    #    GPU 가 바빠 건너뛰었거나 로컬 모델이 빠뜨린 것만 구독 CLI(claude -p)로 한 번 더. 그래도 없으면 _speech 가 소리에서 뺀다.
+    left = [it for it in todo if not it.get("ko") and not _is_korean(it["title"])]
+    if left:
+        try:
+            from debate import ask_claude
+            _apply_ko(left, ask_claude(_ko_prompt(left), timeout=120))
+        except Exception as e:
+            print(f"  [이슈 번역 CLI 실패] {str(e)[:80]}")
     _frame_fallback(todo)
 
 
@@ -909,6 +934,8 @@ def _frame_fallback(items):
         if not frame:
             continue
         ko = (it.get("ko") or "").strip()
+        if not ko and not _is_korean(it["title"]):
+            continue                            # 영어 원제로 한 줄을 지어내면 그게 영어로 읽힌다 — 비워 두고 소리에서 뺀다
         if frame == "AI 논문":
             if "논문" not in ko:
                 it["ko"] = (f"{ko} — 이런 논문이 나왔어" if ko
@@ -964,25 +991,35 @@ def last_shown(max_age_h=6):
 
 def _korean_body(title, lead):
     """원문 앞부분이 영어면 한국어로 옮겨서 돌려준다(소리로 읽어주려면 필요).
-       실패하면 원문 그대로 — 영어로라도 보여주는 편이 아무것도 없는 것보다 낫다."""
+       로컬 → 구독 CLI 순. 둘 다 실패하면 '' — 영어 원문을 그대로 두면 그게 영어로 읽힌다
+       (2026-09-23 호윤: 한국어로 말하게). 원문은 링크로 본다."""
     if not lead:
         return ""
     if len(re.findall(r"[가-힣]", lead)) >= 20:
         return lead
+    prompt = ("아래 기사의 앞부분을 한국어 3문장 이내로 옮겨라. 반말로. "
+              "숫자·누가·무엇을 살리고, 주어진 글에 없는 사실은 절대 쓰지 마라. "
+              "설명이나 머리말 없이 본문만.\n\n"
+              f"제목: {title}\n본문 앞부분: {lead}")
     try:
         import ollama
         r = ollama.Client(timeout=120).chat(
             model=SUMMARY_MODEL, think=False, keep_alive="2m",
             options={"temperature": 0, "num_predict": 500},
-            messages=[{"role": "user", "content":
-                       "아래 기사의 앞부분을 한국어 3문장 이내로 옮겨라. 반말로. "
-                       "숫자·누가·무엇을 살리고, 주어진 글에 없는 사실은 절대 쓰지 마라. "
-                       "설명이나 머리말 없이 본문만.\n\n"
-                       f"제목: {title}\n본문 앞부분: {lead}"}])
+            messages=[{"role": "user", "content": prompt}])
         out = (r["message"].get("content") or "").strip()
-        return out or lead
+        if _is_korean(out):
+            return out
     except Exception:
-        return lead
+        pass
+    try:
+        from debate import ask_claude
+        out = ask_claude(prompt, timeout=120).strip()
+        if _is_korean(out):
+            return out
+    except Exception as e:
+        print(f"  [내용 번역 CLI 실패] {str(e)[:80]}")
+    return ""
 
 
 def detail_of_last(idx=0, max_age_h=6):
@@ -999,8 +1036,14 @@ def detail_of_last(idx=0, max_age_h=6):
             body = ""
     when = "방금" if (age or 0) < 10 else f"{age}분 전" if age < 120 else f"{age // 60}시간 전"
     head = it.get("ko") or it.get("title") or ""
+    if not it.get("ko") and not _is_korean(head):          # 알릴 때 못 옮긴 영어 제목 — 지금 한 번 더
+        tmp = {"title": head}
+        _koreanize([tmp])
+        head = tmp.get("ko") or ""
+    raw = body
     body = _korean_body(it.get("title") or head, body)
-    out = [f"{when} 알린 소식이야. {_sentence(head)}"]
+    out = [f"{when} 알린 소식이야. {_sentence(head)}" if head
+           else f"{when} 알린 해외 소식이야. 제목을 한국어로 못 옮겼어."]
     # 알림 때 붙였던 한 줄 요약과 원문 앞부분이 사실상 같은 말인 경우가 많다 — 긴 쪽만 남긴다
     summary = it.get("detail") or ""
     if summary and body and _similar(_tokens(summary), _tokens(body)):
@@ -1010,14 +1053,16 @@ def detail_of_last(idx=0, max_age_h=6):
     if body:
         out.append(body)
     if not it.get("detail") and not body:
-        out.append("원문 앞부분을 못 가져왔어. 링크로 봐야 할 것 같아.")
-    if it.get("title") and it.get("ko"):
-        out.append(f"(원제: {it['title']})")
+        out.append("원문이 영어인데 한국어로 못 옮겼어. 링크로 봐야 할 것 같아." if raw
+                   else "원문 앞부분을 못 가져왔어. 링크로 봐야 할 것 같아.")
+    if it.get("title") and it["title"] != head:
+        out.append(f"(원제: {it['title'][:100]})")     # 괄호 안은 소리로 안 읽는다 — 120자 넘으면 새므로 자른다
     if it.get("url"):
         out.append(it["url"])
-    if len(items) > 1:
-        rest = ", ".join((x.get("ko") or x.get("title") or "")[:30] for x in items[1:3])
-        out.append(f"같이 알린 것: {rest}")
+    rest = [(x.get("ko") or x.get("title") or "")[:30] for x in items[1:3]
+            if x.get("ko") or _is_korean(x.get("title"))]
+    if rest:
+        out.append(f"같이 알린 것: {', '.join(rest)}")
     return "\n".join(out)
 
 
@@ -1059,16 +1104,25 @@ def _speech(name, items):
        한국어 한 줄이 '~발표했어' 같은 문장이라 '~가 있고' 로 잇지 않는다."""
     def one(x):
         s = _sentence(x.get("ko") or x["title"])
-        return s + (" " + _sentence(x["detail"]) if x.get("detail") else "")
-    lines = [one(x) for x in items[:3]]
+        return s + (" " + _sentence(x["detail"]) if x.get("detail") and _is_korean(x["detail"]) else "")
+    #  한국어 한 줄이 끝내 없는 영어 제목은 읽지 않는다 — 화면 배너에만(2026-09-23 호윤: 한국어로 말하게)
+    said = [x for x in items if x.get("ko") or _is_korean(x["title"])][:3]
+    lines = [one(x) for x in said]
+    left = len(items) - len(said)
     head = "굵직한 " if items[0]["level"] == 3 else ""
+    if not lines:
+        return f"{name} 쪽에 {head}해외 소식 {len(items)}건 있어. 한국어로 못 옮겨서 화면에만 띄웠어."
     if len(items) == 1:
         return f"{name} 쪽에 {head}소식 있어. {lines[0]}"
-    out = f"{name} 쪽에 {head}소식 {len(items)}건 있어. 먼저 {lines[0]} 다음은 {lines[1]}"
-    if len(lines) > 2:
-        out += f" 마지막으로 {lines[2]}"
-    if len(items) > 3:
-        out += f" 나머지 {len(items) - 3}건은 화면에 있어."
+    out = f"{name} 쪽에 {head}소식 {len(items)}건 있어. "
+    if len(lines) == 1:
+        out += lines[0]
+    else:
+        out += f"먼저 {lines[0]} 다음은 {lines[1]}"
+        if len(lines) > 2:
+            out += f" 마지막으로 {lines[2]}"
+    if left:
+        out += f" 나머지 {left}건은 화면에 있어."
     return out
 
 

@@ -72,7 +72,7 @@ def clean_for_speech(text: str) -> str:
     for _ in range(2):                                             # 한 겹 중첩까지
         text = re.sub(r"[(（][^()（）]{0,120}[)）]", " ", text)
         text = re.sub(r"\[[^\[\]]{0,120}\]", " ", text)
-    text = re.sub(r"[#*_>~|\[\]()（）\-•·]", " ", text)  # 남은 짝 없는 괄호·마크다운 기호·불릿
+    text = re.sub(r"[#*_>~|\[\]()（）\-–—•·]", " ", text)  # 남은 짝 없는 괄호·마크다운 기호·불릿·대시
     text = text.replace("\n", " ")
     text = text.replace(",", " ").replace("、", " ")  # 쉼표 제거 → 끊김 완화
     text = re.sub(r"\s+", " ", text).strip()
@@ -88,6 +88,28 @@ def clean_for_speech(text: str) -> str:
 DUCK       = True
 DUCK_LEVEL = 0.2          # 다른 앱을 원래 볼륨의 20% 로
 _DUCK_FILE = os.path.join(_DIR, "duck_state.json")
+#   ★안 줄이는 앱 — 맨 앞 창의 앱 + 이 목록(exe 이름, 소문자).
+#     2026-09-23 호윤: 디코 통화 중에 상대 목소리까지 줄였다. "내가 선택한 창의 소리는 안 줄어들게".
+#     게임하면서 통화하면 맨 앞은 게임이라 디코는 목록으로 따로 뺀다.
+#     pid 가 아니라 이름으로 본다 — 크롬·디코는 창 프로세스와 소리 내는 프로세스가 다르다(이름은 같다).
+DUCK_KEEP  = {"discord.exe"}
+_OWN_EXE   = {"python.exe", "pythonw.exe"}   # 코멧 자기 창(말걸기 창·배너·형체) — 맨 앞이어도 사용자 창이 아니다
+
+
+def _foreground_exe() -> str:
+    """맨 앞 창의 exe 이름(소문자). 모르면 ''."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        import psutil
+        hwnd = ctypes.windll.user32.GetForegroundWindow()
+        if not hwnd:
+            return ""
+        pid = wintypes.DWORD()
+        ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        return psutil.Process(pid.value).name().lower()
+    except Exception:
+        return ""
 
 
 class _Ducker:
@@ -96,6 +118,15 @@ class _Ducker:
         self.lock = threading.Lock()
         self.count = 0
         self.saved = []             # [(session, 원래볼륨, 줄인볼륨)]
+        self.front = ""             # 마지막으로 본 사용자 쪽 맨 앞 앱(코멧 창 제외)
+
+    def remember_front(self) -> str:
+        """지금 맨 앞 앱을 기억한다. 코멧 창이 앞이면 전에 기억한 것을 그대로 쓴다.
+           말걸기 창은 뜨면서 맨 앞을 가져가므로, 창을 띄우기 전에 한 번 불러둔다."""
+        exe = _foreground_exe()
+        if exe and exe not in _OWN_EXE:
+            self.front = exe
+        return self.front
 
     @staticmethod
     def _sessions():
@@ -127,8 +158,14 @@ class _Ducker:
             if self.count > 1:
                 return
             try:
+                keep = DUCK_KEEP | {self.remember_front()}
                 saved, pairs = [], []
                 for s in self._sessions():
+                    try:
+                        if s.Process.name().lower() in keep:
+                            continue
+                    except Exception:
+                        pass
                     v = s.SimpleAudioVolume
                     cur = v.GetMasterVolume()
                     if cur <= 0.01:
@@ -259,11 +296,115 @@ def speak_numbers(text: str) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════
+#  영어 → 한글 소리 (말하기 직전)
+#   2026-09-23 호윤: 영어 발음이 이상하다, 한국어로 말하게 해줘.
+#   아야카는 한국어로만 학습돼 "OpenAI" 같은 걸 이상하게 읽는다. 글자는 그대로 두고 소리만 바꾼다.
+#   ① 사전  ② 대문자 약어는 알파벳 이름으로(GPT → 지피티)  ③ 나머지는 로컬 모델에게 한 번 묻고
+#   hangul_cache.json 에 적어둔다 — 같은 단어는 다음부터 모델 안 거친다.
+#   모델이 실패하면 그 단어는 그대로 둔다(말이 안 끊기는 게 먼저).
+# ═══════════════════════════════════════════════════════════════
+HANGUL_MODEL = "gemma4:12b"         # light 등급 — 게임모드에서도 쓰는 모델이라 게임 중에 올려도 된다
+_HANGUL_FILE = os.path.join(_DIR, "hangul_cache.json")
+_ABC = dict(zip("ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                ["에이", "비", "씨", "디", "이", "에프", "지", "에이치", "아이", "제이", "케이", "엘", "엠",
+                 "엔", "오", "피", "큐", "알", "에스", "티", "유", "브이", "더블유", "엑스", "와이", "제트"]))
+_EN_WORDS = {           # 소문자 키 — 약어처럼 읽으면 안 되는 것, 모델이 틀리기 쉬운 고유명사
+    "openai": "오픈에이아이", "chatgpt": "챗지피티", "nvidia": "엔비디아", "anthropic": "앤트로픽",
+    "claude": "클로드", "gemini": "제미나이", "gemma": "젬마", "google": "구글", "apple": "애플",
+    "microsoft": "마이크로소프트", "meta": "메타", "amazon": "아마존", "tesla": "테슬라",
+    "samsung": "삼성", "intel": "인텔", "qualcomm": "퀄컴", "huawei": "화웨이", "xai": "엑스에이아이",
+    "grok": "그록", "deepseek": "딥시크", "qwen": "큐웬", "llama": "라마", "mistral": "미스트랄",
+    "astra": "아스트라", "copilot": "코파일럿", "github": "깃허브", "huggingface": "허깅페이스",
+    "hugging": "허깅", "face": "페이스", "youtube": "유튜브", "discord": "디스코드", "iphone": "아이폰",
+    "android": "안드로이드", "windows": "윈도우", "python": "파이썬", "bitcoin": "비트코인",
+    "ethereum": "이더리움", "comet": "코멧", "rawcut": "로컷", "nasdaq": "나스닥", "kospi": "코스피",
+    "kosdaq": "코스닥", "fed": "페드", "tsmc": "티에스엠씨", "sk": "에스케이", "lg": "엘지",
+    "api": "에이피아이", "ai": "에이아이", "ok": "오케이", "vs": "대", "etf": "이티에프",
+    "techmeme": "테크밈", "reddit": "레딧", "bluesky": "블루스카이", "mastodon": "마스토돈",
+    "lobsters": "롭스터스", "arxiv": "아카이브", "blackwell": "블랙웰", "rubin": "루빈",
+}
+_hangul_lock = threading.Lock()
+_hangul_cache = None
+
+
+def _load_hangul():
+    global _hangul_cache
+    if _hangul_cache is None:
+        try:
+            with open(_HANGUL_FILE, encoding="utf-8") as f:
+                _hangul_cache = json.load(f)
+        except Exception:
+            _hangul_cache = {}
+    return _hangul_cache
+
+
+def _ask_hangul(words):
+    """영어 단어들 → {단어: 한글 소리}. 실패하면 {}."""
+    try:
+        import ollama
+        r = ollama.Client(timeout=20).chat(
+            model=HANGUL_MODEL, format="json", think=False, keep_alive="10m",
+            options={"temperature": 0, "num_predict": 400},
+            messages=[{"role": "user", "content":
+                       "아래 영어 단어들을 한국 사람이 읽는 소리 그대로 한글로 적어라. 뜻 번역 말고 소리. "
+                       "외래어 표기법을 따르고, 회사·제품·사람 이름은 한국에서 흔히 쓰는 표기로. "
+                       'JSON 만: {"단어": "한글"}\n\n' + "\n".join(words)}])
+        got = json.loads(r["message"].get("content") or "{}")
+    except Exception as e:
+        print(f"  [한글 소리 실패] {str(e)[:60]}")
+        return {}
+    out = {}
+    for k, v in (got.items() if isinstance(got, dict) else []):
+        v = str(v).strip()
+        if k.lower() in words and re.fullmatch(r"[가-힣 ]{1,30}", v):   # 한글만 받는다
+            out[k.lower()] = v
+    return out
+
+
+def _spell(word: str) -> str:
+    return "".join(_ABC[c] for c in word.upper())
+
+
+def speak_hangul(text: str) -> str:
+    """문장 속 영어 단어를 한글 소리로. 한글 문장은 그대로."""
+    tokens = set(re.findall(r"[A-Za-z]+", text))
+    if not tokens:
+        return text
+    with _hangul_lock:
+        cache = _load_hangul()
+        unknown = sorted({w.lower() for w in tokens
+                          if w.lower() not in _EN_WORDS and w.lower() not in cache
+                          and not (w.isupper() and len(w) <= 4)
+                          and not re.fullmatch(r"[A-Z]{2,4}s", w)})
+        if unknown:
+            new = _ask_hangul(unknown[:40])
+            if new:
+                cache.update(new)
+                try:
+                    with open(_HANGUL_FILE, "w", encoding="utf-8") as f:
+                        json.dump(cache, f, ensure_ascii=False, indent=0)
+                except OSError:
+                    pass
+
+    def one(m):
+        w = m.group()
+        low = w.lower()
+        if low in _EN_WORDS:
+            return _EN_WORDS[low]
+        if w.isupper() and len(w) <= 4:              # GPT · AMD · CEO
+            return _spell(w)
+        if re.fullmatch(r"[A-Z]{2,4}s", w):         # GPUs → 지피유즈
+            return _spell(w[:-1]) + "즈"
+        return cache.get(low, w)
+    return re.sub(r"[A-Za-z]+", one, text)
+
+
+# ═══════════════════════════════════════════════════════════════
 #  Mouth — Edge-TTS
 # ═══════════════════════════════════════════════════════════════
 def synth_mp3(text: str, voice: str = TTS_VOICE, rate: str = TTS_RATE) -> bytes:
     """텍스트 → InJoon mp3 바이트. 데몬이 폰으로 음성을 쏠 때 쓴다(로컬 재생 X)."""
-    clean = clean_for_speech(text)
+    clean = speak_hangul(clean_for_speech(text))
     if not clean:
         return b""
 
@@ -408,7 +549,7 @@ class Mouth:
         global _waiting
         if TTS_ENGINE == "ayaka":
             text = speak_numbers(text)       # clean_for_speech 가 ~·- 를 지우기 전에
-        clean = clean_for_speech(text)
+        clean = speak_hangul(clean_for_speech(text))   # 정리 뒤에 — 링크·코드는 이미 빠져 있다
         if not clean:
             return False
 
