@@ -568,11 +568,61 @@ def _ayaka_reason(err):
         return ""
 
 
+# ── 목소리 먼저 — 아야카 합성 직전에 GPU 자리를 본다 (2026-10-07) ─────────
+#  ★굳는 진짜 원인: 16GB 를 LLM·Whisper·아야카가 나눠 쓴다. 코멧이 gemma4:12b(8.3GB, keep_alive 10분)나
+#    Q3 26b(13GB)를 올려 둔 채 아야카가 합성하면 'CUDA error: out of memory' 로 서버가 굳는다.
+#    10/07 07:18 새 데몬에서 '알림 테스트' 때 여유 176MB — 다시 띄워도 또 굳는 상태였다(호윤: "TTS 개에반데").
+#  → 합성 전에 여유를 재고, 모자라면 ollama 에 올라 있는 모델을 내린다(keep_alive=0 — 프로세스는 안 건드림,
+#    다음에 필요하면 저절로 다시 올라온다. 생성 중인 모델은 그 생성이 끝난 뒤 내려간다).
+#    그래도 모자라면 이번 말은 아야카를 부르지 않고 Edge — 모자란 채로 부르면 서버가 굳어서 이후 말이 다 Edge 가 된다.
+AYAKA_NEED_MB = 1500       # 아야카가 한 문장 합성에 더 쓰는 몫(여유가 이보다 적으면 자리를 낸다)
+OLLAMA_URL = "http://127.0.0.1:11434"
+
+
+def _vram_free_mb():
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
+                             capture_output=True, text=True, timeout=3,
+                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
+        return int(out.strip().splitlines()[0])
+    except Exception:
+        return None                # 못 재면 막지 않는다(예전처럼 부른다)
+
+
+def _room_for_ayaka():
+    """True = 아야카를 불러도 된다. 자리가 모자라면 ollama 모델을 내려 자리를 만든다."""
+    import urllib.request
+    free = _vram_free_mb()
+    if free is None or free >= AYAKA_NEED_MB:
+        return True
+    names = []
+    try:
+        with urllib.request.urlopen(OLLAMA_URL + "/api/ps", timeout=2) as r:
+            names = [m.get("name") for m in json.loads(r.read()).get("models", []) if m.get("name")]
+        for n in names:
+            req = urllib.request.Request(OLLAMA_URL + "/api/generate",
+                                         data=json.dumps({"model": n, "keep_alive": 0}).encode("utf-8"),
+                                         headers={"Content-Type": "application/json"})
+            urllib.request.urlopen(req, timeout=10).read()
+    except Exception:
+        pass
+    for _ in range(10):            # 내려가는 데 1~2초
+        time.sleep(0.3)
+        after = _vram_free_mb()
+        if after is None or after >= AYAKA_NEED_MB:
+            print(f"  [아야카] GPU 여유 {free}MB → {after}MB — 모델 내려 자리 냄({', '.join(names) or '없음'})")
+            return True
+    print(f"  [아야카] GPU 여유 {free}MB — 자리 못 냄(생성 중인 모델) → 이번 말은 Edge (굳지 않게)")
+    return False
+
+
 def synth_ayaka(text: str, timeout: float = 30.0):
     """아야카 서버에 합성 요청 → (파형, 샘플레이트). 서버가 없거나 실패하면 None."""
     import io
     import urllib.error
     import urllib.request
+    if _ayaka_port_open() and not _room_for_ayaka():
+        return None
     try:
         with open(AYAKA_REF, encoding="utf-8") as f:
             ref = json.load(f)
