@@ -461,13 +461,33 @@ def show_orb(data, sr, wait: float = 2.5):
 
 
 _AYAKA_SPAWNED = False
+#  ★서버가 '살아 있는데 고장'인 경우 — 2026-10-07 확인.
+#    10/01 합성 도중 GPU 메모리가 모자라 'CUDA error: out of memory' 가 난 뒤로, 9/28 부터 떠 있던
+#    서버(따로 사는 프로세스)가 모든 요청에 즉시 400 을 줬다. 연결 거부가 아니라서 아래
+#    start_ayaka_server() 가 한 번도 안 불렸고, 데몬을 다시 켜도 서버는 그대로라 10/01~10/07 목소리가 전부 Edge 였다.
+#    → 400 본문에 CUDA 오류가 보이면 서버 자체 명령(/control?command=exit)으로 내리고 새로 띄운다.
+AYAKA_SELF_HEAL = True     # False 면 고장 나도 손 안 대고 Edge 로만 버틴다
+AYAKA_HEAL_GAP  = 600      # 다시 띄우기는 10분에 한 번까지 — VRAM 이 정말 모자란 동안엔 띄워도 또 굳는다
+_AYAKA_HEALED   = 0.0
 
 
-def start_ayaka_server():
-    """아야카 서버를 창 없이 띄운다(안 기다림). 한 프로세스에서 한 번만 시도.
+def _ayaka_port_open(timeout=0.3):
+    """아야카 서버 포트가 열려 있나(떠 있나). 굳었는지는 모른다 — 그건 합성 요청 답으로 본다."""
+    import socket
+    from urllib.parse import urlparse
+    u = urlparse(AYAKA_URL)
+    try:
+        with socket.create_connection((u.hostname, u.port or 80), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def start_ayaka_server(force=False):
+    """아야카 서버를 창 없이 띄운다(안 기다림). 한 프로세스에서 한 번만 시도(force=True 는 고장 복구용).
     모델 올리는 데 ~10초 — 그동안의 말은 Edge 로 나가고, 다음 말부터 아야카."""
     global _AYAKA_SPAWNED
-    if _AYAKA_SPAWNED:
+    if _AYAKA_SPAWNED and not force:
         return
     _AYAKA_SPAWNED = True
     root = os.path.dirname(os.path.dirname(AYAKA_REF))          # .../gpt-sovits
@@ -484,9 +504,67 @@ def start_ayaka_server():
     print("  [아야카] 서버 띄우는 중 — 이번 말은 Edge 로")
 
 
+def warm_ayaka(log=print):
+    """데몬 뜰 때 미리 띄운다. 안 그러면 첫 말이 '연결 거부'를 보고서야 띄우느라 그 말은 Edge 로 샜다
+    (9/22·9/28 로그 — 데몬 켜고 첫 알림이 매번 Edge). 이미 떠 있으면 손 안 댄다(굳었는지는 첫 말에서 본다)."""
+    if TTS_ENGINE != "ayaka" or _ayaka_port_open():
+        return
+    start_ayaka_server()
+
+    def wait():
+        dead = time.time() + 90
+        while time.time() < dead:
+            if _ayaka_port_open():
+                log("  [아야카] 목소리 준비 완료")
+                return
+            time.sleep(1)
+        log("  [아야카] 90초 안에 안 떴다 — 말은 Edge 로 나간다 (gpt-sovits/mydata/server.log 확인)")
+    threading.Thread(target=wait, name="ayaka-warm", daemon=True).start()
+
+
+def heal_ayaka(why=""):
+    """서버는 떠 있는데 GPU 오류로 굳었다 → 내리고 새로 띄운다. 뒤에서 돌고 안 기다린다(지금 말은 Edge 로).
+    밖에서 프로세스를 죽이지 않는다 — api_v2 가 원래 갖고 있는 /control?command=exit 로 서버가 스스로 내려간다."""
+    global _AYAKA_HEALED, _AYAKA_SPAWNED
+    if not AYAKA_SELF_HEAL or time.time() - _AYAKA_HEALED < AYAKA_HEAL_GAP:
+        return False
+    _AYAKA_HEALED = time.time()
+    _AYAKA_SPAWNED = True          # 내렸다 띄우는 사이 다른 말이 '연결 거부'를 보고 하나 더 띄우지 않게
+
+    def run():
+        import urllib.request
+        try:
+            urllib.request.urlopen(AYAKA_URL.rsplit("/", 1)[0] + "/control?command=exit", timeout=5)
+        except Exception:
+            pass                   # 서버가 그 자리에서 꺼지며 연결을 끊는다 — 오류가 나는 게 정상
+        dead = time.time() + 15
+        while time.time() < dead and _ayaka_port_open():
+            time.sleep(0.3)
+        if _ayaka_port_open():
+            print("  [아야카] 굳은 서버가 안 내려갔다 — 계속 Edge 로 (아야카 서버 프로세스를 직접 꺼야 한다)")
+            return
+        start_ayaka_server(force=True)
+
+    print(f"  [아야카] 서버가 GPU 오류로 굳어 있다({why.splitlines()[0][:40] if why else '?'}) "
+          "→ 내리고 다시 띄운다 — 그동안 Edge 로")
+    threading.Thread(target=run, name="ayaka-heal", daemon=True).start()
+    return True
+
+
+def _ayaka_reason(err):
+    """HTTP 오류의 진짜 이유. 서버는 {"message": "tts failed", "Exception": "..."} 로 준다 —
+    예전엔 'HTTP Error 400: Bad Request' 만 찍혀서 서버가 굳은 걸 몰랐다."""
+    try:
+        body = json.loads(err.read().decode("utf-8", "replace"))
+        return str(body.get("Exception") or body.get("message") or "").strip()
+    except Exception:
+        return ""
+
+
 def synth_ayaka(text: str, timeout: float = 30.0):
     """아야카 서버에 합성 요청 → (파형, 샘플레이트). 서버가 없거나 실패하면 None."""
     import io
+    import urllib.error
     import urllib.request
     try:
         with open(AYAKA_REF, encoding="utf-8") as f:
@@ -500,7 +578,19 @@ def synth_ayaka(text: str, timeout: float = 30.0):
         req = urllib.request.Request(AYAKA_URL, data=body,
                                      headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            return sf.read(io.BytesIO(r.read()))
+            data, sr = sf.read(io.BytesIO(r.read()))
+        #  합성 도중 오류(GPU 메모리 부족 등)가 나면 서버는 200 + 1초 무음을 준다(TTS.run 의 except).
+        #  그대로 틀면 알림이 소리 없이 지나간다 — 10/01 15:26 알림이 그랬다. 무음이면 Edge 로.
+        if not np.any(data):
+            print("  [아야카 무음 → Edge 로] 서버가 합성 중 오류를 삼켰다 — gpt-sovits/mydata/server.log")
+            return None
+        return data, sr
+    except urllib.error.HTTPError as e:
+        why = _ayaka_reason(e) or str(e)
+        print(f"  [아야카 실패 → Edge 로] {e.code} {why.splitlines()[0][:60] if why else ''}")
+        if "CUDA" in why or "out of memory" in why:
+            heal_ayaka(why)
+        return None
     except Exception as e:
         print(f"  [아야카 없음 → Edge 로] {str(e)[:60]}")
         if "10061" in str(e) or "refused" in str(e).lower():   # 서버가 아예 없을 때만 띄운다

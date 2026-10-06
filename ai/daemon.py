@@ -104,6 +104,10 @@ try:
         print("[덕킹] 지난번에 줄인 채 끝난 앱 볼륨을 되돌림")
 except Exception as _e:
     print(f"[덕킹] 복구 건너뜀: {_e}")
+try:
+    _voice.warm_ayaka()           # 목소리 서버를 미리 — 첫 말이 Edge 로 새지 않게(서버는 데몬과 따로 산다)
+except Exception as _e:
+    print(f"[아야카] 미리 띄우기 건너뜀: {_e}")
 
 
 # ── 접속 토큰: 없으면 생성, 있으면 로드 (이 파일은 공유 금지) ──
