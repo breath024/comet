@@ -37,6 +37,7 @@ import re
 import sys
 import json
 import time
+import threading
 import subprocess
 import urllib.request
 from datetime import datetime
@@ -1080,17 +1081,43 @@ def popup(tag, title, body="", level=2, sec=8.0):
 
 
 _last_say = 0.0     # 마지막으로 소리 낸 시각 — 말걸기 창이 같은 대답을 또 읽지 않게
+SAY_WAIT = 15       # 배너를 목소리 준비까지 붙잡아 두는 상한(초). 평소 합성은 3~6초(아야카 2~3초 + 형체)
 
 
-def _say(text):
+def _say(text, on_show=None):
+    """읽는다. on_show(배너 등)는 소리가 나기 직전에 같이 띄운다 — 한 번만.
+       ★2026-10-07 호윤: "소식이 나오고 TTS가 나오거든? 급한게 아니니까 TTS랑 동시에 나오도록".
+         예전엔 배너를 먼저 띄우고 합성을 시작해서 목소리가 몇 초~수십 초 뒤에 따라왔다.
+       합성이 SAY_WAIT 를 넘기면 배너만 먼저(목소리는 준비되는 대로), 못 읽었으면(실패·Esc·줄이 밀려 버림)
+       배너만이라도 띄운다 — 소식 자체가 사라지면 안 된다."""
     global _last_say
     _last_say = time.time()
+    shown, lock = [], threading.Lock()
+
+    def show():
+        with lock:
+            if shown:
+                return
+            shown.append(1)
+        if on_show:
+            try:
+                on_show()
+            except Exception as e:
+                print(f"  [이슈 배너 오류] {e}")
+    timer = threading.Timer(SAY_WAIT, show) if on_show else None
+    if timer:
+        timer.daemon = True
+        timer.start()
     try:
         import voice
         #   뒷전 소식이라 줄이 밀려 있으면 버린다 — 지난 뉴스를 몇 분 뒤에 읽어주면 더 이상하다
-        voice.Mouth().speak(text, drop_if_busy=True)
+        voice.Mouth().speak(text, drop_if_busy=True, on_start=show)
     except Exception as e:
         print(f"  [이슈 TTS 오류] {e}")
+    finally:
+        if timer:
+            timer.cancel()
+        show()
 
 
 def _sentence(t):
@@ -1140,10 +1167,14 @@ def deliver(cat, items, *, speak=True, show=True, log=print, record=True):
     body = (top["detail"][:90] + "\n" if top.get("detail") else "") + top.get("why", "") + more
     if len(items) > 1:
         body += "\n" + "\n".join("· " + (x.get("ko") or x["title"])[:48] for x in items[1:3])
-    if show:
-        popup(tag, line, body, top["level"], sec=6 + 2 * top["level"])
+
+    def appear():               # 눈에 보이는 쪽 — 목소리와 같은 순간에(_say 가 재생 직전에 부른다)
+        if show:
+            popup(tag, line, body, top["level"], sec=6 + 2 * top["level"])
     if speak:
-        _say(_speech(name, items))
+        _say(_speech(name, items), on_show=appear)
+    else:
+        appear()                # 조용한 시간 — 배너만, 기다릴 소리가 없다
     if not record:
         return
     logs = _load(LOG_FILE, [])

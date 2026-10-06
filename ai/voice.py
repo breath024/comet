@@ -752,11 +752,13 @@ class Mouth:
         self.rate  = rate
         self.gain  = gain
 
-    def speak(self, text: str, drop_if_busy: bool = False):
+    def speak(self, text: str, drop_if_busy: bool = False, on_start=None):
         """차례를 기다렸다가 읽는다. 읽었으면 True.
            drop_if_busy=True(이슈 알림 같은 뒷전 소식)면 줄이 길 때 그냥 버린다 —
            묵은 뉴스를 몇 분 뒤에 우르르 읽어주는 게 더 이상하다.
-           Esc(그만) 전에 들어왔거나 Esc 직후(ESC_GRACE) 이어 들어온 말은 안 읽는다."""
+           Esc(그만) 전에 들어왔거나 Esc 직후(ESC_GRACE) 이어 들어온 말은 안 읽는다.
+           on_start() = 합성이 끝나고 소리 나기 직전에 한 번(이슈 배너를 목소리와 같이 띄우려고).
+           못 읽으면 안 불린다 — 그 뒤처리는 부른 쪽 몫."""
         global _waiting
         called_at = time.time()              # ★정리 전에 잰다 — 한글 소리 찾기가 모델을 부르면 수 초 걸려
                                              #   'Esc 전에 온 말' 이 'Esc 뒤에 온 말' 로 보였다
@@ -777,7 +779,7 @@ class Mouth:
                 _hush.clear()
                 try:
                     with _EscWatch():        # 합성~재생 동안 Esc 를 어느 창에서든 받는다
-                        asyncio.run(self._speak(clean))
+                        asyncio.run(self._speak(clean, on_start))
                 except Exception as e:
                     print(f"  [TTS 오류] {e}")
                     return False
@@ -786,7 +788,7 @@ class Mouth:
                 _waiting -= 1
         return True
 
-    async def _speak(self, text: str):
+    async def _speak(self, text: str, on_start=None):
         path = None
         try:
             got = synth_ayaka(text) if TTS_ENGINE == "ayaka" else None
@@ -803,6 +805,11 @@ class Mouth:
                 return
             ducker.on()                      # 다른 앱 소리 낮추고
             try:
+                if on_start:                 # 소리와 같이 보일 것(이슈 배너·대화창) — 형체와 같이 띄운다
+                    try:
+                        on_start()
+                    except Exception as e:
+                        print(f"  [말 시작 알림 오류] {e}")
                 if SHOW_ORB:
                     show_orb(data, sr)       # 형체 먼저 띄우고(첫 프레임까지 대기)
                 if not _hush.is_set():       # 형체 뜨길 기다리는 사이(최대 2.5초)에 Esc 가 왔으면 안 튼다
