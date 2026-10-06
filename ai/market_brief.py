@@ -62,12 +62,17 @@ WEB_FALLBACK = ("뉴욕증시 마감 특징주", "kr-ko")   # 뉴스가 빈약�
 BIG_MOVE = 1.5        # 첫 화면 '크게 움직인 종목' 기준(% 이상). 그런 게 3개 미만이면 큰 순서로 3개
 MAX_MOVERS = 5
 TG_MAX = 3900         # notify.send 가 4000자에서 자른다 — 태그 중간에서 잘리지 않게 여기서 먼저 맞춘다
-# 모델 칸 글자 수 — 프롬프트에 주는 목표. 화면을 망가뜨릴 만큼(HARD) 넘치면 그 칸은 버린다.
-HARD = {"summary": 48, "point": 90, "mover": 80, "mood": 120}
+# ★호윤은 폰(S26+)으로 본다 — 텔레그램 말풍선 한 줄 = 한글 20자 안팎. 첫 화면 줄은 안 접히게 짜고,
+#   모델 칸도 이 폭에 맞춘다(summary 한 줄, 나머지는 두 줄 안). 프롬프트 목표를 HARD 만큼 넘치면 버린다.
+HARD = {"summary": 26, "point": 40, "mover": 32, "mood": 60}
+LINE_UNITS = 40       # 폰 한 줄 폭 — 한글 1자 = 2, 영문·숫자 1자 = 1 로 센다(한글 20자 ≈ 영문 40자)
 
 _WEEK = "월화수목금토일"
 _FG_KO = {"extreme fear": "극단 공포", "fear": "공포", "neutral": "중립",
           "greed": "탐욕", "extreme greed": "극단 탐욕"}
+# CNN 세부지표 이름(prices) — 폰 한 줄에 들어가게 브리핑에서만 줄여 부른다
+_FG_SHORT = {"시장 폭(상승·하락)": "시장 폭", "정크본드 수요": "정크본드", "안전자산 수요": "안전자산",
+             "풋/콜 옵션비율": "풋콜 비율", "변동성(VIX)": "VIX"}
 
 
 def _strip_think(t):
@@ -80,15 +85,34 @@ def _esc(s):
     return str(s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def _arrow(p):
-    """등락률 → '▲0.58%' / '▼3.18%'. 텔레그램은 글자색을 못 쓰니 모양으로 방향을 보인다."""
-    if p is None:
-        return "—"
-    if p > 0:
-        return f"▲{p:.2f}%"
-    if p < 0:
-        return f"▼{-p:.2f}%"
-    return "0.00%"
+def _cut(s, units):
+    """폰 폭(units)에 맞게 자르고 '…'. 한글·이모지는 2칸, 나머지는 1칸으로 센다 —
+       글자 수로 자르면 영어 제목이 'WSJ Stock Market Toda…' 처럼 너무 일찍 잘린다."""
+    out, used = "", 0
+    for ch in s or "":
+        w = 2 if ord(ch) >= 0x1100 else 1
+        if used + w > units:
+            return out.rstrip() + "…"
+        out, used = out + ch, used + w
+    return out
+
+
+def _mark(p):
+    """등락 이모지 — 📈(빨강)=오름 · 📉(파랑)=내림. 텔레그램은 글자색을 못 써서 이모지 색으로
+       한국식 빨강·파랑을 낸다(호윤 요청 2026-10-07 — 처음엔 ▲▼ 였다)."""
+    if not p:
+        return "➖"
+    return "📈" if p > 0 else "📉"
+
+
+def _pct(p):
+    return "—" if p is None else f"{p:+.2f}%"
+
+
+def _row(name, p, bold=False):
+    """폰 한 줄 — '📈 브로드컴 +3.67%'. 이모지·이름·등락 사이는 띄어쓰기 한 칸으로 통일."""
+    v = f"<b>{_pct(p)}</b>" if bold else _pct(p)
+    return f"{_mark(p)} {_esc(name)} {v}"
 
 
 # ── 세션: 지금 다루는 게 어느 날 정규장인가 ─────────────────────────
@@ -311,12 +335,14 @@ SYNTH_SYS = (
     "너는 미국 증시 마감 브리핑의 '해석 칸'만 채운다. 지수·종목 숫자와 화면 모양은 코드가 따로 만든다.\n"
     "[근거]만 보고 아래 JSON 하나만 출력해라. 앞뒤 설명·마크다운·코드펜스 금지.\n"
     '{"summary": "...", "points": ["...", "..."], "movers": {"종목이름": "..."}, "mood": "..."}\n'
-    "- summary: 오늘 장 성격 한 줄, 34자 이내. 예) 실적 기대에 기술주 주도 상승, 반도체는 엇갈림\n"
-    "- points: 오늘 장을 움직인 이유·흐름 최대 3개, 각 50자 이내, 한 줄에 한 가지. 이번 세션 기사에 있는 것만.\n"
+    "읽는 사람은 폰으로 본다 — 한 줄에 한글 20자 안팎이 들어간다. 글자 수를 꼭 지켜라.\n"
+    "- summary: 오늘 장 성격, 폰 한 줄 = 20자 이내. 예) 금리 하락에 기술주 최고치\n"
+    "- points: 오늘 장을 움직인 이유·흐름 최대 3개, 각 20자 이내(폰 한 줄), 하나에 한 가지. "
+    "이번 세션 기사에 있는 것만. 예) 국채금리 하락에 기술주 강세\n"
     "- movers: [크게 움직인 종목] 중 이번 세션 기사에 그 종목 이름이 직접 나오고 움직인 이유가 적힌 것만 "
-    '{"종목이름": "이유 45자 이내"}. \'업종 흐름에 동반\' 같은 추측은 넣지 마라. 하나도 없으면 {}.\n'
-    "- mood: 공포·탐욕 세부지표가 '뜻하는' 분위기 한 줄, 50자 이내. 어느 지표가 극단인지 나열은 코드가 "
-    "따로 붙이니 반복하지 말고 해석만(예: '겉은 중립, 속은 소수 대형주 쏠림 — 상승 폭 좁음 경계'). "
+    '{"종목이름": "이유 18자 이내"}. \'업종 흐름에 동반\' 같은 추측은 넣지 마라. 하나도 없으면 {}.\n'
+    "- mood: 공포·탐욕 세부지표가 '뜻하는' 분위기, 36자 이내(폰 두 줄). 어느 지표가 극단인지 나열은 코드가 "
+    "따로 붙이니 반복하지 말고 해석만(예: '겉은 중립, 속은 소수 대형주 쏠림'). "
     "극단 공포=과매도·반등 기대, 극단 탐욕=과열 경계 맥락. 단정하지 말고 분위기로.\n"
     "[철칙]\n"
     "- 등락률·지수값·가격·% 같은 시세 숫자를 쓰지 마라. 숫자는 코드가 옆에 붙인다.\n"
@@ -332,7 +358,7 @@ AUDIT_SYS = (
     "- 근거의 '이번 세션 기사'에 없는 사건·인과는 지운다. 전망·추천 글을 이유로 쓴 줄도 지운다.\n"
     "- 단정한 인과('때문에')는 '~영향으로 보임'으로 낮춘다.\n"
     "- 등락률·지수값 같은 시세 숫자는 지운다(코드가 따로 붙인다).\n"
-    "- 글자 수(summary 34 · points 각 50 · movers 각 45 · mood 50)를 넘으면 줄인다.")
+    "- 글자 수(summary 20 · points 각 20 · movers 각 18 · mood 36)를 넘으면 줄인다 — 폰 한 줄이 한글 20자다.")
 
 
 # ── 바쁠 때 우회하는 두뇌 = 호윤 구독 CLI(클로드 → 아스트라) ─────
@@ -518,8 +544,7 @@ def _code_summary(data):
         head = f"{who} {both}하락"
     else:
         head = f"{who} 엇갈림"
-    highs = [r["name"] for r in data["indices"] if r["high"]]
-    return head + (f" · {'·'.join(highs)} 52주 최고 종가" if highs else "")
+    return head          # 52주 최고 종가는 지수 줄에 붙어 있다 — 여기까지 붙이면 폰 한 줄을 넘는다
 
 
 # ── 조립: 텔레그램 HTML 한 통 ──────────────────────────────────────
@@ -532,8 +557,10 @@ def _detail_sections(data, txt, picks, failed=False):
             "· 이번 장 기사에서 확인된 이유 없음 — 숫자만 정리"
     secs.append(("", pts or [empty]))
     names = {m["sym"]: m for m in data["movers"]}
-    why = [f"{_esc(names[sym]['name'])} {_arrow(names[sym]['pct'])} — {_esc(v)}"
-           for sym, v in sorted(txt["movers"].items(), key=lambda kv: -abs(names[kv[0]]["pct"]))]
+    why = []
+    for sym, v in sorted(txt["movers"].items(), key=lambda kv: -abs(names[kv[0]]["pct"])):
+        # 종목 줄은 짧게 두고 이유는 다음 줄로 — 한 줄에 몰면 폰에서 아무 데서나 접힌다
+        why += [_row(names[sym]["name"], names[sym]["pct"]), f"└ {_esc(v)}"]
     if why:
         secs.append(("종목별 이유", why))
     fg = data.get("fg") or {}
@@ -542,26 +569,27 @@ def _detail_sections(data, txt, picks, failed=False):
         flow = [f"{lab} {fg[k]}" for lab, k in (("1주 전", "prev_week"), ("전날", "prev_close"))
                 if fg.get(k) is not None]
         if flow:
-            mood.append("흐름: " + " → ".join(flow + [f"오늘 {fg['value']}"]))
+            mood.append(" → ".join(flow + [f"오늘 {fg['value']}"]))
         for tag, lab in (("extreme fear", "극단 공포"), ("extreme greed", "극단 탐욕")):
-            names_ = [c["name"] for c in fg.get("components") or [] if c.get("rating") == tag]
+            names_ = [_FG_SHORT.get(c["name"], c["name"]) for c in fg.get("components") or []
+                      if c.get("rating") == tag]
             if names_:
-                mood.append(f"{lab}: {_esc('·'.join(names_))}")
+                mood.append(f"{lab} — {_esc('·'.join(names_))}")
         if mood:
             secs.append(("심리", mood))
     shown = {m["sym"] for m in picks}
     rest = sorted((m for m in data["movers"] if m["sym"] not in shown), key=lambda m: -m["pct"])
     if rest:
-        secs.append(("그 외 종목", [" · ".join(f"{_esc(m['name'])} {_arrow(m['pct'])}"
-                                              for m in rest)]))
+        secs.append(("그 외 종목", [_row(m["name"], m["pct"]) for m in rest]))   # 한 줄에 하나
     links = []
     for it in data["news"][:4]:
         href = (it.get("link") or "").replace("&", "&amp;").replace('"', "&quot;")
-        title = _clean_title(it.get("title"))
-        if len(title) > 40:
-            title = title[:39].rstrip() + "…"
+        src = _cut(it.get("source") or "기사", 14)
+        # '· 매체 제목' 이 폰 한 줄에 들어가게 — 앞의 '· '·띄어쓰기 몫 3칸을 빼고 남는 폭만큼 제목
+        title = _cut(_clean_title(it.get("title")), LINE_UNITS - 3 - sum(
+            2 if ord(c) >= 0x1100 else 1 for c in src))
         if href and title:
-            links.append(f'<a href="{href}">{_esc(it.get("source") or "기사")}: {_esc(title)}</a>')
+            links.append(f'· <a href="{href}">{_esc(src)}</a> {_esc(title)}')
     if links:
         secs.append(("기사", links))
     return secs
@@ -575,12 +603,11 @@ def render(data, txt, brain, note=""):
     head = [f"<b>미국 증시 · {_when(s) if s else '최근 장'}</b>",
             _esc(txt.get("summary") or _code_summary(data)), ""]
     for r in data["indices"]:
-        head.append(f"{_esc(r['name'])}  <b>{_arrow(r['pct'])}</b>"
-                    + ("  <i>52주 최고 종가</i>" if r["high"] else ""))
+        head.append(_row(r["name"], r["pct"], bold=True) + (" · 52주 최고 종가" if r["high"] else ""))
     picks = _pick_movers(data["movers"])
     if picks:
         head += ["", "<b>크게 움직인 종목</b>"]
-        head += [f"{_esc(m['name'])}  <b>{_arrow(m['pct'])}</b>" for m in picks]
+        head += [_row(m["name"], m["pct"], bold=True) for m in picks]
     fg = data.get("fg") or {}
     if fg.get("ok"):
         line = (f"공포·탐욕 <b>{fg['value']} "
@@ -588,8 +615,8 @@ def render(data, txt, brain, note=""):
         if fg.get("prev_close") is not None:
             line += f" · 전날 {fg['prev_close']}"
         head += ["", line]
-    foot = (f"<i>숫자 Yahoo·CNN 실측 · 해석 {_esc(brain)} · 이번 장 기사 {len(data['news'])}건"
-            + (f" · {_esc(note)}" if note else "") + "</i>")
+    # 꼬리말도 폰 한 줄 — 기사 수는 접힌 '기사' 칸에 있으니 뺐다. 이상이 있을 때만 둘째 줄
+    foot = f"Yahoo·CNN 실측 · 해석 {_esc(brain)}" + (f"\n{_esc(note)}" if note else "")
     secs = _detail_sections(data, txt, picks, failed=bool(note))
     while True:
         body = "\n\n".join((f"<b>{t}</b>\n" if t else "") + "\n".join(ls) for t, ls in secs)
