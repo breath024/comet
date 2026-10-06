@@ -621,8 +621,17 @@ class History:
                 with open(path, "r", encoding="utf-8") as f:
                     self.msgs = json.load(f)
                 print(f"  [기억] 이전 대화 {len(self.msgs)}개 불러옴")
-            except Exception:
+            except Exception as e:
+                # ★예전엔 여기서 조용히 빈 기록으로 시작했다 — 첫 대답의 save() 가 깨진 파일을 덮어써
+                #   지난 대화가 통째로 사라지고 흔적도 안 남는다. 깨진 원본은 옆에 복사해 두고 알린다.
                 self.msgs = []
+                keep = f"{path}.broken-{time.strftime('%Y%m%d-%H%M%S')}"
+                try:
+                    import shutil
+                    shutil.copy2(path, keep)
+                except Exception:
+                    keep = "(복사도 못 함)"
+                print(f"  [기억] 대화 기록을 못 읽었다({e}) — 원본은 {keep} 에 두고 빈 기록으로 시작")
 
     def add(self, role, content):
         self.msgs.append({"role": role, "content": content})
@@ -631,8 +640,27 @@ class History:
         return self.msgs[-MAX_HISTORY:]
 
     def save(self):
-        with open(self.path, "w", encoding="utf-8") as f:
+        """임시 파일에 다 쓴 뒤 바꿔 끼운다(issues._save 와 같은 방식).
+           ★데몬은 창을 X 로 닫아 끈다 — 정상 종료 없이 그 자리에서 죽는다. 예전처럼 제자리에 쓰면('w' 로 여는 순간
+             파일이 비고, 70KB 를 몇 번에 나눠 쓴다) 그 사이에 죽을 때 반쯤 쓴 파일이 남고, 위 __init__ 이 못 읽는다.
+             임시 이름에 스레드 번호 — 회의 스레드와 대답이 같은 순간 저장해도 서로의 임시 파일을 안 덮게."""
+        tmp = f"{self.path}.{os.getpid()}-{threading.get_ident()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(self.msgs, f, ensure_ascii=False, indent=2)
+        for i in range(5):
+            try:
+                os.replace(tmp, self.path)
+                return
+            except PermissionError:          # 대화창이 지난 대화를 읽는 순간 등 — 잠깐 뒤 다시
+                time.sleep(0.05 * (i + 1))
+        try:                                 # 끝내 막히면 예전처럼 제자리에 — 아예 못 남기는 것보단 낫다
+            with open(self.path, "w", encoding="utf-8") as f:
+                json.dump(self.msgs, f, ensure_ascii=False, indent=2)
+        finally:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
 
     def reset(self):
         self.msgs = []
