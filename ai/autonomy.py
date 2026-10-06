@@ -79,12 +79,23 @@ class _Mode:
     def is_on(self):
         return bool(self._thread and self._thread.is_alive())
 
+    def running(self):
+        """켜져 있고 끄는 중도 아니다. is_on() 은 '끄라고 했는데 아직 점검·말하는 중'인 스레드도 참이다."""
+        return self.is_on() and not self._stop.is_set()
+
     def start(self):
         ok, why = self.available()
         if not ok:
             return False, why
         if self.is_on():
-            return True, "이미 켜져 있음"
+            if not self._stop.is_set():
+                return True, "이미 켜져 있음"
+            #  ★끄는 중(점검·말하는 중이라 아직 안 끝난 스레드)에 다시 켬 — 버튼을 빨리 껐다 켜면 생긴다.
+            #    예전엔 '이미 켜져 있음' 으로 돌아가 버려서, 그 스레드가 끝나는 순간 설정은 켜짐인데 실제론 꺼졌다.
+            self._stop.clear()                   # 그 스레드를 그대로 살린다
+            self._thread.join(0.2)               # 막 빠져나가던 참이었으면 끝나길 잠깐 기다렸다가
+            if self.is_on():
+                return True, "다시 켬"
         self._stop.clear()
         self._thread = threading.Thread(target=self._guard, name=f"mode-{self.name}",
                                         daemon=True)
@@ -289,11 +300,15 @@ class IssuesMode(_Mode):
     def __init__(self, cfg, log, gpu_busy_fn=None):
         super().__init__(cfg, log)
         self.gpu_busy_fn = gpu_busy_fn
+        #  다음에 켤 때 지금 떠 있는 소식을 '본 것'으로만 등록한다 — 껐다 켜면 그동안 쌓인 게 한꺼번에 쏟아졌다.
+        #  호윤이 켤 때(알림 켜·소식 듣기 버튼)만 세운다. 데몬 재시작(restore)은 예전 그대로.
+        self.rebase = False
 
     def check_now(self, dry=False):
         import issues
         return issues.check(dict(self.cfg.get("modes") or {}), gpu_busy_fn=self.gpu_busy_fn,
-                            quiet_hours=self.cfg.get("quiet") or None, log=self.log, dry=dry)
+                            quiet_hours=self.cfg.get("quiet") or None, log=self.log, dry=dry,
+                            alive=lambda: not self._stop.is_set())    # 점검 도중 꺼지면 알리지 않는다
 
     def interval(self):
         # 한 바퀴 수집이 ~10초(2026-09-17 실측: AI 3.1 + 경제 6.5). 1분 밑으로는 안 내린다
@@ -303,9 +318,12 @@ class IssuesMode(_Mode):
     def _run(self):
         import issues
         try:
-            if not issues._load(issues.SEEN_FILE, []):
+            if self.rebase or not issues._load(issues.SEEN_FILE, []):
+                first = not self.rebase
+                self.rebase = False
                 issues.check(dict(self.cfg.get("modes") or {}), log=self.log, baseline=True)
-                self.log("[issues] 처음 켬 — 지금 떠 있는 소식은 본 것으로 등록(다음 점검부터 새 소식만)")
+                self.log(f"[issues] {'처음 켬' if first else '다시 켬'} — 지금 떠 있는 소식은 본 것으로 등록"
+                         "(다음 점검부터 새 소식만)")
         except Exception as e:
             self.log(f"[issues] 베이스라인 실패: {e}")
         self.log(f"[issues] 가동 — {self.interval() // 60}분마다 · {self.cfg.get('modes')}")
@@ -724,9 +742,10 @@ class Autonomy:
 
         def _sync():
             want = any(issues.MODE_MIN.get(v, 99) <= 3 for v in c["modes"].values())
-            if want and not m.is_on():
+            if want and not m.running():           # running — 끄는 중인 스레드는 꺼진 걸로 본다
+                m.rebase = True                    # 켤 때는 그동안 쌓인 소식을 쏟지 않는다
                 self.enable("issues")
-            elif not want and m.is_on():
+            elif not want and m.running():
                 self.disable("issues")
             else:
                 _save_cfg(self.cfg)
@@ -810,6 +829,15 @@ class Autonomy:
                 return f"{issues.CAT_NAME[cat]} 알림 → {level} ({desc[level]})."
         return ("알림 사용법: 알림 / 알림 켜 / 알림 끔 / 알림 ai 굵직|보통|전부|끔 / 알림 경제 … / "
                 "알림 지금 / 알림 테스트 / 알림 기록 / 알림 다시 / 알림 조용 2-8 / 뉴스")
+
+    # 대화창 「소식 듣기」 버튼 — '알림 켜/끔' 과 같은 스위치(끄기 전 강도 기억·켤 때 베이스라인)를 그대로 쓴다
+    def issues_state(self):
+        c = self.cfg["issues"]
+        return {"on": any(v != "끔" for v in c["modes"].values()), "modes": dict(c["modes"])}
+
+    def issues_toggle(self, on):
+        msg = self.issues_command("알림 켜" if on else "알림 끔")
+        return dict(self.issues_state(), msg=msg)
 
     # comet 의 "자율모드 ..." 한 줄 명령 파서
     def command(self, low):

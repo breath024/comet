@@ -11,6 +11,8 @@
 #   실행:  python chat_win.py     콘솔 없이:  run_chat.bat
 #   · 대답은 소리로도 읽어준다(머리말 🔊 로 끄기) — 요청에 speak 를 실으면 데몬이
 #     아야카 목소리로 읽는다. 글자가 먼저 오고 읽기는 뒤에서 돈다.
+#   · 머리말 「소식 듣기」 = AI·경제 소식 알림 켜기/끄기(데몬 POST /news, '알림 켜/끔' 과 같은 스위치).
+#     몇 초마다 데몬에 물어 상태를 맞춘다 — 콘솔에서 '알림 끔' 해도 버튼이 따라 바뀐다.
 # ═══════════════════════════════════════════════════════════════
 import json
 import os
@@ -35,6 +37,7 @@ ICON = os.path.join(HERE, "web", "icon-192.png")
 BACKLOG = 20          # 열 때 보여줄 지난 대화 수(메시지 개수)
 TIMEOUT = 600         # 27b·분석이면 몇 분 걸린다 — 넉넉히
 BUBBLE_MAX = 0.78     # 말풍선 최대 너비(창 대비)
+NEWS_POLL_MS = 3000   # 소식 듣기 상태를 데몬에 묻는 간격
 
 BG, CARD, LINE = "#0e0f12", "#1c1e24", "#23252b"
 FG, SUB, ME = "#e8e8ea", "#6b6e76", "#2a6df4"
@@ -89,6 +92,7 @@ def _backlog():
 
 class Bridge(QObject):
     done = Signal(bool, object)
+    news = Signal(bool, object, bool)     # (성공, /news 답, 버튼으로 바꾼 것인가)
 
 
 class Bubble(QLabel):
@@ -178,9 +182,19 @@ class ChatWindow(QWidget):
         self.spk.setToolTip("읽어주기 켜기/끄기")
         self.spk.setStyleSheet("QPushButton{background:transparent; border:none; font-size:14px;}")
         self.spk.clicked.connect(self._toggle_speak)
+        self.news_on = None                    # 소식 듣기 — 데몬에서 받아 온 값. 모르면 None
+        self._news_busy = False                # 묻는 중(겹쳐 묻지 않게)
+        self.newsb = QPushButton()
+        self.newsb.setFixedHeight(26)
+        self.newsb.setCursor(Qt.PointingHandCursor)
+        self.newsb.setToolTip("AI·경제 소식 알림 켜기/끄기 — 배너·목소리 전부\n"
+                              "켤 때 그동안 쌓인 소식은 건너뛰고 새 소식부터")
+        self.newsb.clicked.connect(self._toggle_news)
+        self._paint_news()
         hl.addWidget(name)
         hl.addStretch(1)
         hl.addWidget(self.status)
+        hl.addWidget(self.newsb)
         hl.addWidget(self.spk)
         root.addWidget(head)
 
@@ -227,8 +241,13 @@ class ChatWindow(QWidget):
 
         self.bridge = Bridge()
         self.bridge.done.connect(self._arrived)
+        self.bridge.news.connect(self._news_arrived)
         self.tick = QTimer(self)
         self.tick.timeout.connect(self._tick)
+        self.ntick = QTimer(self)
+        self.ntick.timeout.connect(self._poll_news)
+        self.ntick.start(NEWS_POLL_MS)
+        QTimer.singleShot(300, self._poll_news)
 
         self._restore()
         self._fill_backlog()
@@ -314,6 +333,50 @@ class ChatWindow(QWidget):
     def _toggle_speak(self):
         self.speak = not self.speak
         self.spk.setText("🔊" if self.speak else "🔇")
+
+    # ── 소식 듣기 (AI·경제 알림 스위치) ──
+    def _paint_news(self):
+        on = self.news_on
+        if on is None:
+            txt, css = "소식 듣기 …", f"background:transparent; color:{SUB}; border:1px solid {LINE};"
+        elif on:
+            txt, css = "소식 듣기 · 켜짐", f"background:{ME}; color:#fff; border:1px solid {ME};"
+        else:
+            txt, css = "소식 듣기 · 꺼짐", f"background:transparent; color:{SUB}; border:1px solid #2c2f37;"
+        self.newsb.setText(txt)
+        self.newsb.setStyleSheet("QPushButton{" + css + "border-radius:13px; padding:0 12px;"
+                                 "font-size:12px;} QPushButton:disabled{color:#8b8f99;}")
+
+    def _news_call(self, payload, toggled):
+        def run():
+            ok, res = _post("/news", payload, timeout=30)
+            self.bridge.news.emit(ok, res, toggled)
+        self._news_busy = True
+        threading.Thread(target=run, daemon=True).start()
+
+    def _poll_news(self):
+        if not self._news_busy:
+            self._news_call({}, False)
+
+    def _toggle_news(self):
+        if self.news_on is None or self._news_busy:
+            return                              # 아직 상태를 모른다 — 데몬이 안 떠 있거나 묻는 중
+        self.newsb.setEnabled(False)
+        self._news_call({"on": not self.news_on}, True)
+
+    def _news_arrived(self, ok, res, toggled):
+        self._news_busy = False
+        self.newsb.setEnabled(True)
+        if ok and isinstance(res, dict) and "on" in res:
+            self.news_on = bool(res["on"])
+            if toggled:
+                self._bubble("소식 듣기 켬 — 지금 떠 있는 건 건너뛰고 새 소식부터" if self.news_on
+                             else "소식 듣기 끔 — 다시 켤 때까지 소식 알림 안 함", "sys")
+        else:
+            self.news_on = None
+            if toggled:
+                self._bubble(f"소식 듣기 못 바꿈 — {res}", "sys")
+        self._paint_news()
 
     def _worker(self, text):
         ok, res = _post("/chat", {"text": text, "speak": self.speak})

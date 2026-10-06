@@ -1263,9 +1263,10 @@ def replay(n=3, *, speak=True, show=True, log=print):
 # ═══════════════════════════════════════════════════════════════
 #  한 번 점검 — 자율모드 스레드가 주기적으로 부른다
 # ═══════════════════════════════════════════════════════════════
-def check(modes, *, gpu_busy_fn=None, quiet_hours=None, log=print, dry=False, baseline=False):
+def check(modes, *, gpu_busy_fn=None, quiet_hours=None, log=print, dry=False, baseline=False, alive=None):
     """modes = {"ai":"굵직", "econ":"보통"} → 알린 건수 dict.
-       baseline=True: 지금 떠 있는 건 '본 것'으로만 등록(처음 켤 때 몰아서 쏟아지는 것 방지)."""
+       baseline=True: 지금 떠 있는 건 '본 것'으로만 등록(처음 켤 때 몰아서 쏟아지는 것 방지).
+       alive(): 거짓이면 알리지 않는다 — 수집(~10초) 도중에 '소식 듣기'를 껐을 때. 본 것 등록은 그대로."""
     seen = _load(SEEN_FILE, [])
     busy, _ = gpu_busy_fn() if gpu_busy_fn else (False, "")
     hour = datetime.now().hour
@@ -1292,11 +1293,14 @@ def check(modes, *, gpu_busy_fn=None, quiet_hours=None, log=print, dry=False, ba
             continue
         hit = [x for x in new if x["level"] >= need][:5]
         _mark_seen(new, seen)              # 기준 미달도 '봤음' — 나중에 강도 오르면 그때 알림
-        if not hit:
+        if not hit or (alive and not alive()):
             result[cat] = 0
             continue
         _enrich(hit)
         _koreanize(hit, busy=busy)
+        if alive and not alive():          # 내용·번역 받는 사이(수 초~수십 초)에 꺼졌으면 여기서도 멈춘다
+            result[cat] = 0
+            continue
         if dry:
             for x in hit:
                 log(f"  [{LEVEL_NAME[x['level']]}] {x.get('ko') or x['title']}  ({x['why']})")

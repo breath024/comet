@@ -302,6 +302,7 @@ STATIC = _load_static()
 
 
 _speak_lock = threading.Lock()
+_news_lock = threading.Lock()
 
 
 def _speak_async(text):
@@ -362,7 +363,7 @@ class Handler(BaseHTTPRequestHandler):
         return bool(tok) and hmac.compare_digest(tok, TOKEN)
 
     def do_POST(self):
-        if self.path not in ("/chat", "/tts", "/imgsearch"):
+        if self.path not in ("/chat", "/tts", "/imgsearch", "/news"):
             self._send(404, json.dumps({"error": "not found"}))
             return
         if not self._authorized():
@@ -372,6 +373,10 @@ class Handler(BaseHTTPRequestHandler):
         # /imgsearch: 폰에서 올린 사진(base64) → 임시파일 → 이미지 역검색(heavy 27b 종합)
         if self.path == "/imgsearch":
             self._handle_imgsearch()
+            return
+        # /news: 대화창 「소식 듣기」 버튼 — 대화 줄(_lock)에 안 선다(코멧이 생각 중이어도 바로 먹게)
+        if self.path == "/news":
+            self._handle_news()
             return
 
         try:
@@ -407,6 +412,27 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, json.dumps({"reply": reply}, ensure_ascii=False))
         if want_speak:
             _speak_async(reply)        # 글자를 먼저 보내고, 읽기는 뒤에서
+
+    def _handle_news(self):
+        """{"on": true|false} = 소식 듣기 켜기/끄기('알림 켜/끔' 과 같은 스위치), 비우면 지금 상태만."""
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            data = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+        except Exception:
+            self._send(400, json.dumps({"error": "bad request"}))
+            return
+        try:
+            a = _comet.autonomy
+            if isinstance(data.get("on"), bool):
+                with _news_lock:                     # 버튼 연타 — 켜고 끄기가 엇갈리지 않게 한 번에 하나
+                    st = a.issues_toggle(data["on"])
+                print(f"\n[소식 듣기] {'켬' if data['on'] else '끔'} (대화창 버튼)")
+            else:
+                st = a.issues_state()
+        except Exception as e:
+            self._send(500, json.dumps({"error": str(e)}, ensure_ascii=False))
+            return
+        self._send(200, json.dumps(st, ensure_ascii=False))
 
     def _handle_imgsearch(self):
         try:
