@@ -270,8 +270,17 @@ class BriefMode(_Mode):
                 if not notify.configured():
                     self.log("[brief] 텔레그램 미설정 — 브리핑 보류")
                     continue
+                # 주말·휴장일엔 새 장이 없다 — 이미 보낸 장이면 오늘은 건너뛴다. 예전엔 토·일·월
+                # 아침마다 같은 금요일 장이 세 번 왔다(호윤 10/07). 장 날짜를 못 구하면 그냥 진행.
+                ses = market_brief.latest_session()
+                if ses and self.cfg.get("last_session") == str(ses["date"]):
+                    self.cfg["last_date"] = today    # 오늘은 더 볼 것 없음 — 하루 한 번만 확인
+                    if self.save_fn:
+                        self.save_fn()
+                    self.log(f"[brief] {ses['date']} 장은 이미 보냄 — 오늘은 건너뜀(주말·휴장)")
+                    continue
                 self.log("[brief] 미증시 브리핑 생성 중"
-                         + ("(클로드/아스트라)…" if via == "cloud" else "(27b)…"))
+                         + ("(클로드/아스트라)…" if via == "cloud" else "(로컬 26b)…"))
                 r = market_brief.generate(via=via, log=self.log)
                 if not r.get("ok"):
                     self.log(f"[brief] 생성 실패: {r.get('msg')} — 다음 점검 재시도")
@@ -279,6 +288,8 @@ class BriefMode(_Mode):
                 res = notify.send(r["text"])
                 if res.get("ok"):
                     self.cfg["last_date"] = today    # 전송 성공 때만 잠금
+                    if r.get("session"):
+                        self.cfg["last_session"] = r["session"]
                     if self.save_fn:
                         self.save_fn()
                     self.log(f"[brief] 푸시 완료 — {today}")

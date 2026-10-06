@@ -695,9 +695,18 @@ def generate(model=BRIEF_MODEL, verbose=False, via="local", log=None):
             return {"ok": False, "msg": "클라우드 두뇌(클로드·아스트라) 둘 다 실패 — 다음 점검 재시도"}
     txt = _clean(d, data, evidence)
     note = "" if d is not None else "해석 형식 깨짐 — 숫자만"
+    s = data.get("session")
     return {"ok": True, "text": render(data, txt, brain, note), "txt": txt,
             "news": data["news"], "web": data["web"], "indices": data["indices"],
-            "movers": data["movers"], "brain": brain}
+            "movers": data["movers"], "brain": brain,
+            "session": str(s["date"]) if s and s["closed"] else ""}   # 다 끝난 장만 '보냄'으로 잠근다
+
+
+def latest_session():
+    """지금 기준 가장 최근 정규장 — S&P500 마지막 체결 시각 한 번만 본다(브리핑 전에 '이미 보낸
+       장인가' 확인용, 2초 안팎). 못 구하면 None."""
+    r = prices._yahoo("^GSPC", "지수")
+    return _session(r.get("time")) if r.get("ok") else None
 
 
 if __name__ == "__main__":
