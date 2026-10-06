@@ -32,7 +32,13 @@ import prices
 import web
 import news
 
-BRIEF_MODEL = "gemma4:26b"            # 종합·해석은 신중하게(정확>속도)
+# 종합·해석은 신중하게(정확>속도) — comet.HEAVY_MODEL·NUM_CTX 와 같은 값(comet 은 무거워 import 안 함).
+#  ★2026-10-07: 예전 'gemma4:26b'(Q4 18GB)를 num_ctx 없이 불러, ollama 가 문맥을 최대로 잡고
+#    21.9GB 가 필요하다며 보조 모델 적재에서 죽었다(9/22·9/23 로그의 ctx_other 줄). 그래서 아침마다
+#    로컬이 10분 간격으로 실패하다 'GPU 바쁨' 으로 판정된 뒤에야 클라우드로 나갔다(9/23 은 4시간 늦음).
+#    comet 이 9/22 에 고친 것과 같은 처방: Q3(13GB) + num_ctx 고정.
+BRIEF_MODEL = "huihui-gemma4-abliterated:26b-a4b-i1-q3_k_m"
+NUM_CTX = 32768
 _AC = ollama.Client(timeout=600)      # 2패스 — 얼어붙음 대비 긴 타임아웃
 
 # 첫 화면에 이 순서 그대로 찍힌다.
@@ -445,7 +451,7 @@ def _local_brief(model, evidence):
     """로컬 2패스(종합 → 사실감사), 둘 다 JSON 모드. → (dict 또는 None, 오류문구 또는 None)."""
     try:
         r1 = _chat(model=model, keep_alive="2m", format="json",
-                   options={"temperature": 0.2, "num_predict": 1200},
+                   options={"temperature": 0.2, "num_predict": 1200, "num_ctx": NUM_CTX},
                    messages=[{"role": "system", "content": SYNTH_SYS},
                              {"role": "user", "content": "[근거]\n" + evidence}])
         draft = _strip_think(r1["message"].get("content", ""))
@@ -455,7 +461,7 @@ def _local_brief(model, evidence):
         return None, "종합 결과가 비어 있음"
     try:
         r2 = _chat(model=model, keep_alive="2m", format="json",
-                   options={"temperature": 0, "num_predict": 1200},
+                   options={"temperature": 0, "num_predict": 1200, "num_ctx": NUM_CTX},
                    messages=[{"role": "system", "content": AUDIT_SYS},
                              {"role": "user",
                               "content": "[근거]\n" + evidence + "\n\n[초안 JSON]\n" + draft}])
@@ -664,6 +670,8 @@ def generate(model=BRIEF_MODEL, verbose=False, via="local", log=None):
 
     via="cloud" 면 로컬 26b 대신 구독 CLI(클로드→아스트라)로 1패스 생성한다.
     GPU 가 게임 등으로 바쁠 때 브리핑을 미루지 않고 그냥 내보내려는 우회로.
+    로컬이 실패해도(모델이 안 뜸 등) 그 자리에서 클라우드로 넘어간다 — 예전엔 실패만 남기고
+    10분 뒤 다시 로컬을 시도해서 브리핑이 몇 시간씩 늦었다(호윤 9/18: 로컬로만 안 돌아도 됨).
     모델 답이 JSON 이 아니면(형식 깨짐) 해석 칸 없이 숫자만이라도 보낸다.
     """
     data = gather()
@@ -674,15 +682,17 @@ def generate(model=BRIEF_MODEL, verbose=False, via="local", log=None):
     if verbose:
         print(evidence, "\n", "=" * 40)
 
+    if via != "cloud":
+        d, err = _local_brief(model, evidence)
+        brain = "로컬"
+        if err:
+            if log:
+                log(f"[brief] 로컬 실패({str(err)[:120]}) — 클로드·아스트라로 넘어감")
+            via = "cloud"
     if via == "cloud":
         d, brain = _cloud_brief(evidence, log)
         if not brain:
             return {"ok": False, "msg": "클라우드 두뇌(클로드·아스트라) 둘 다 실패 — 다음 점검 재시도"}
-    else:
-        d, err = _local_brief(model, evidence)
-        if err:
-            return {"ok": False, "msg": err}
-        brain = "로컬"
     txt = _clean(d, data, evidence)
     note = "" if d is not None else "해석 형식 깨짐 — 숫자만"
     return {"ok": True, "text": render(data, txt, brain, note), "txt": txt,
