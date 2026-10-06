@@ -12,7 +12,12 @@ HOME          = os.path.expanduser("~")
 SNAPSHOT_PATH = os.path.join(HOME, "iCloudDrive", "Only Money", "snapshot.json")
 PROMPTS_PATH  = os.path.join(HOME, "iCloudDrive", "Only Money", "prompts.json")
 
-MODEL   = "gemma4:26b"   # analyst.py와 동일 — 신중한 추론 모델
+# 두뇌 — 2026-10-07 부터 레이어마다 클로드 → 아스트라(구독 CLI) 먼저, 로컬은 예비.
+#  호윤: "조사나 이런 것도 claude 나 gpt 로 해결할 수 있는 것들은 그쪽 cli 불러서 해결".
+#  예전 'gemma4:26b'(Q4 18GB, num_ctx·think 없음)는 16GB 에 안 올라가 9/22 이후 레이어마다 오류였다.
+#  예비는 comet.HEAVY_MODEL·NUM_CTX 와 같은 값(Q3 13GB).
+MODEL   = "huihui-gemma4-abliterated:26b-a4b-i1-q3_k_m"
+NUM_CTX = 32768
 TIMEOUT = 300            # 레이어당 최대 대기(초)
 UA      = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) COMET/1.0"
 
@@ -233,7 +238,17 @@ def _build_context(snapshot, quotes, fg):
 
 
 # ── 9단 파이프라인 실행 ───────────────────────────────────────
-def _run_layer(layer, base_context, accumulated, print_fn):
+def _cloud_layer(who, system, user):
+    import debate                    # ask_claude / ask_astra (ANTHROPIC_API_KEY 뺀 자식 환경)
+    prompt = system + "\n\n" + user + "\n\n(파일은 읽거나 쓰지 말고 이 레이어 분석만 글로.)"
+    if who == "클로드":
+        return debate.ask_claude(prompt, timeout=TIMEOUT).strip()
+    return debate.ask_astra(prompt, timeout=TIMEOUT).strip()
+
+
+def _run_layer(layer, base_context, accumulated, print_fn, dead=None):
+    """dead = 앞 레이어에서 실패한 두뇌(한도 등) — 다음 레이어에선 건너뛴다(매번 몇 분씩 안 기다리게)."""
+    dead = set() if dead is None else dead
     sp = layer["systemPrompt"]
     icon = layer.get("icon", "")
     name = layer["name"]
@@ -247,6 +262,20 @@ def _run_layer(layer, base_context, accumulated, print_fn):
         if accumulated else base_context
     )
 
+    # 클로드 → 아스트라. 구독 CLI 는 스트리밍이 없어 레이어가 끝나면 한 번에 찍힌다.
+    for who in ("클로드", "아스트라"):
+        if who in dead:
+            continue
+        try:
+            out = _cloud_layer(who, sp, user_msg)
+            if out:
+                print_fn(f"({who})")
+                print_fn(out)
+                return out
+        except Exception as e:
+            print_fn(f"  [{who} 실패 → 다음 두뇌] {str(e)[:120]}")
+        dead.add(who)
+
     messages = [
         {"role": "system",  "content": sp},
         {"role": "user",    "content": user_msg},
@@ -254,7 +283,10 @@ def _run_layer(layer, base_context, accumulated, print_fn):
 
     chunks = []
     try:
-        for part in _client.chat(model=MODEL, messages=messages, stream=True):
+        print_fn("(로컬)")
+        # think=False — gemma4 는 사고를 따로 세서, 끄지 않으면 본문이 0자로 나올 수 있다(작업 유의사항)
+        for part in _client.chat(model=MODEL, messages=messages, stream=True, think=False,
+                                 options={"num_ctx": NUM_CTX}):
             tok = part.get("message", {}).get("content", "")
             if tok:
                 print_fn(tok, end="")
@@ -350,9 +382,10 @@ def run(print_fn=None):
     # 8. 9단 레이어 순차 실행
     all_text = [f"Only Money 9단 파이프라인 분석{snapshot_age}\n"]
     accumulated = ""
+    dead = set()                      # 한 번 실패한 두뇌는 남은 레이어에서 건너뜀
 
     for i, layer in enumerate(layers):
-        layer_out = _run_layer(layer, context, accumulated, print_fn)
+        layer_out = _run_layer(layer, context, accumulated, print_fn, dead)
         section = f"\n{layer.get('icon','')} {layer['name']}\n{layer_out}"
         all_text.append(section)
         accumulated += section
