@@ -315,23 +315,52 @@ class IssuesMode(_Mode):
         # — 레딧·구글뉴스 RSS 는 키 없이 자주 치면 막힌다(막혀도 그 소스만 0건, _safe).
         return max(60, int(self.cfg.get("interval_sec", 120)))
 
+    MUTEX = "Local\\COMET_ISSUES"
+
+    def _single(self):
+        """이 PC 에서 소식 알림은 한 COMET 만. 잡으면 핸들, 남이 잡고 있으면 False, 윈도우가 아니면 None.
+           ★데몬 + 콘솔(run.bat)이 같이 뜨면 둘 다 restore() 로 소식을 돌린다 — 같은 소식이 두 번 울리고 목소리도 겹친다.
+             (9/18 11:16·11:17 같은 8건이 재시작 기록 없이 90초 간격으로 두 번 — 이것으로 보인다. 로그가 없어 확인은 못 함)
+             말걸기(TalkMode)와 같은 이름 있는 뮤텍스 방식."""
+        if os.name != "nt":
+            return None
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateMutexW.restype = wintypes.HANDLE
+        k32.CreateMutexW.argtypes = (ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR)
+        h = k32.CreateMutexW(None, False, self.MUTEX)
+        if ctypes.get_last_error() == 183:              # ERROR_ALREADY_EXISTS
+            k32.CloseHandle(wintypes.HANDLE(h))
+            return False
+        return h
+
     def _run(self):
         import issues
+        mutex = self._single()
+        if mutex is False:
+            self.log("[issues] 다른 COMET 이 이미 소식 알림을 돌리고 있음 — 여기선 안 돎")
+            return
         try:
-            if self.rebase or not issues._load(issues.SEEN_FILE, []):
-                first = not self.rebase
-                self.rebase = False
-                issues.check(dict(self.cfg.get("modes") or {}), log=self.log, baseline=True)
-                self.log(f"[issues] {'처음 켬' if first else '다시 켬'} — 지금 떠 있는 소식은 본 것으로 등록"
-                         "(다음 점검부터 새 소식만)")
-        except Exception as e:
-            self.log(f"[issues] 베이스라인 실패: {e}")
-        self.log(f"[issues] 가동 — {self.interval() // 60}분마다 · {self.cfg.get('modes')}")
-        while not self._stop.wait(self.interval()):     # 매 바퀴 다시 읽는다 — '알림 주기' 가 바로 먹게
             try:
-                self.check_now()
+                if self.rebase or not issues._load(issues.SEEN_FILE, []):
+                    first = not self.rebase
+                    self.rebase = False
+                    issues.check(dict(self.cfg.get("modes") or {}), log=self.log, baseline=True)
+                    self.log(f"[issues] {'처음 켬' if first else '다시 켬'} — 지금 떠 있는 소식은 본 것으로 등록"
+                             "(다음 점검부터 새 소식만)")
             except Exception as e:
-                self.log(f"[issues] 점검 오류: {e}")
+                self.log(f"[issues] 베이스라인 실패: {e}")
+            self.log(f"[issues] 가동 — {self.interval() // 60}분마다 · {self.cfg.get('modes')}")
+            while not self._stop.wait(self.interval()):     # 매 바퀴 다시 읽는다 — '알림 주기' 가 바로 먹게
+                try:
+                    self.check_now()
+                except Exception as e:
+                    self.log(f"[issues] 점검 오류: {e}")
+        finally:
+            if mutex:
+                import ctypes
+                ctypes.WinDLL("kernel32").CloseHandle(ctypes.c_void_p(mutex))
 
 
 # ═══════════════════════════════════════════════════════════════

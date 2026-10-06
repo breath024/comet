@@ -40,7 +40,8 @@ import time
 import threading
 import subprocess
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timezone
+from functools import lru_cache
 
 _DIR = os.path.dirname(os.path.abspath(__file__))
 SEEN_FILE = os.path.join(_DIR, "issues_seen.json")
@@ -98,9 +99,13 @@ def _load(path, default):
 
 
 def _save(path, obj):
+    """임시 파일에 다 쓴 뒤 바꿔 끼운다 — 쓰는 도중 데몬이 꺼지면 반쯤 쓴 파일이 남아 '본 것'이 통째로 비었다
+       (본 것이 비면 다음 판에 지금 떠 있는 걸 전부 새 소식으로 본다)."""
+    tmp = path + ".tmp"
     try:
-        with open(path, "w", encoding="utf-8") as f:
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(obj, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
     except Exception:
         pass
 
@@ -126,10 +131,137 @@ def _tokens(t):
 
 
 def _similar(a, b):
+    """긴 글 둘이 사실상 같은 말인가(detail_of_last 의 요약·원문 비교용). 사건 판정은 _same_event."""
     if not a or not b:
         return False
     inter = len(a & b)
     return inter >= 3 or inter / max(1, min(len(a), len(b))) >= 0.6
+
+
+# ═══════════════════════════════════════════════════════════════
+#  같은 사건인가 — 제목 둘을 비교한다. 지금은 '이미 알린 것 거르기'(_filter_new)에만 쓴다.
+#   ★묶기(_cluster)·커뮤니티 합치기는 옛 판정 그대로 뒀다 — 기사 원재료 243건(10/07)으로 돌려 보니
+#     새 판정으로 바꾸면 '몇 개 매체 보도' 가 크게 줄어 굵직·볼만함이 거의 안 나온다(강도 기준이 바뀌는 일).
+#     옛 묶기는 반대로 다른 기사를 많이 붙인다('Nvidia 보안 플랫폼' 에 보험사·위키미디어·규제 칼럼까지) —
+#     매체 수가 부풀고 붙은 기사는 묻힌다. 묶기 전용 판정을 따로 맞춰야 하는 일이라 남겨 둔다.
+#   ★2026-10-07 호윤: "중복으로 가져오는 것도 많더라". 알림 기록 265건을 손으로 묶어 보니 예전 판정(_similar)은
+#     · 조사·표기가 다르면 다른 사건 — '정책실장에'·'정책실장', '오퍼스'·'오푸스', '앤트로픽'·'앤스로픽'
+#     · 해커뉴스의 짧은 제목('Claude Opus 5.5')과 기사 제목을 못 이었다
+#     · 반대로 'to·in·ai' 같은 흔한 세 단어만 겹쳐도 같은 사건이라 다른 사건을 묻었다
+#       ('Anthropic's IPO Will Be AI's Next Moment of Crisis' = 'Anthropic says Claude … its next AI')
+#   그래서 ① 조사·어미 떼기 ② 표기 흔들림을 한 이름으로 ③ 흔한 말은 가볍게(0.3) ④ 제품+버전은 무겁게(gemini4 = 2)
+#   ⑤ 겹친 무게가 2 이상이면서 짧은 쪽 무게의 60% 이상일 때만 같은 사건.
+#   정답지 쌍 비교(48시간 안·같은 분야): 같은 사건 맞힘 52→63 · 다른 사건을 같다고 함 8→0.
+#   ★문턱을 낮추면(0.5) 'GPT-6 Sol·Luna' 와 'GPT-6 Astra 에니그마' 처럼 같은 제품군 다른 사건이 붙는다 — 0.6 유지.
+#   영어↔한국어로 말을 바꾼 기사(해킹·R&D 26% 등)는 여전히 못 잇는다 — 낱말 비교의 한계.
+# ═══════════════════════════════════════════════════════════════
+_CJK = {"美": " 미국 ", "中": " 중국 ", "日": " 일본 ", "韓": " 한국 ", "靑": " 청와대 ", "佛": " 프랑스 ",
+        "獨": " 독일 ", "英": " 영국 ", "北": " 북한 ", "與": " 여당 ", "野": " 야당 "}
+_EV_ALIAS = {     # 회사·제품·사람·자주 나오는 사건어 — 영어/한글/표기 흔들림을 하나로
+    "오픈에이아이": "openai", "앤트로픽": "anthropic", "앤스로픽": "anthropic", "클로드": "claude",
+    "오퍼스": "opus", "오푸스": "opus", "소넷": "sonnet", "하이쿠": "haiku", "제미나이": "gemini",
+    "제미니": "gemini", "구글": "google", "엔비디아": "nvidia", "nvda": "nvidia", "마이크로소프트": "microsoft",
+    "ms": "microsoft", "메타": "meta", "애플": "apple", "아마존": "amazon", "테슬라": "tesla",
+    "딥시크": "deepseek", "큐웬": "qwen", "미스트랄": "mistral", "화웨이": "huawei", "알리바바": "alibaba",
+    "삼성": "samsung", "삼성전자": "samsung", "챗지피티": "chatgpt", "올트먼": "altman", "알트먼": "altman",
+    "아모데이": "amodei", "젠슨": "jensen", "버핏": "buffett", "머스크": "musk", "트럼프": "trump",
+    "파월": "powell", "아스트라": "astra", "루나": "luna", "나스닥": "nasdaq", "코스피": "kospi",
+    "코스닥": "kosdaq", "연준": "fed", "fomc": "fed", "일본은행": "boj", "한은": "bok", "한국은행": "bok",
+    "상장": "ipo", "엔스케일": "nscale", "해커": "hack", "해커들": "hack", "해킹": "hack", "hacker": "hack",
+    "hacked": "hack", "hacking": "hack", "침투": "hack", "breach": "hack", "breached": "hack",
+    "lg전자": "lg", "lg엔솔": "lg", "lg에너지솔루션": "lg",
+    "연기": "delay", "미뤄": "delay", "미룰": "delay", "미룬": "delay", "shift": "delay", "postpone": "delay",
+    "delayed": "delay", "january": "1월", "february": "2월", "march": "3월", "april": "4월",   # may 는 조동사라 뺐다
+    "june": "6월", "july": "7월", "august": "8월", "september": "9월", "october": "10월",
+    "november": "11월", "december": "12월",
+}
+#  흔한 말 — 겹쳐도 같은 사건이라는 근거가 약하다. 실제 제목 389개(알림 기록+본 것)의 문서 빈도 위쪽에서 골랐다.
+_EV_LOW = {"ai", "openai", "anthropic", "nvidia", "google", "microsoft", "meta", "apple", "amazon",
+           "agent", "model", "모델", "stock", "market", "주식", "증시", "시장", "금리", "인상", "급등", "급락",
+           "상승", "하락", "환율", "경제", "data", "safety", "안전", "공개", "출시", "발표", "release", "launch",
+           "unveil", "announce", "new", "새", "신규", "미국", "us", "한국", "중국", "일본", "인공지능", "생성형",
+           "llm", "gpu", "ceo", "트렌딩", "github", "깃허브", "허깅페이스", "논문", "paper", "trump",
+           "investor", "기업", "chatgpt", "tech", "2025", "2026", "2027"}
+_EV_PRODUCT = {"claude", "opus", "sonnet", "haiku", "gemini", "gpt", "llama", "qwen", "mistral", "large",
+               "grok", "deepseek", "phi", "gemma"}
+_EV_STOP = {"the", "and", "for", "with", "from", "that", "this", "its", "are", "has", "will", "says", "after",
+            "over", "into", "about", "to", "in", "of", "on", "is", "it", "be", "as", "an", "if", "at", "by",
+            "up", "can", "could", "should", "what", "more", "how", "why", "a", "or", "not", "but", "you",
+            "your", "we", "our", "they", "their", "he", "she", "his", "her", "was", "were", "been", "have",
+            "had", "do", "does", "did", "than", "then", "so", "just", "now", "here", "there", "who", "which",
+            "while", "amid", "via", "per", "vs", "s", "t", "exclusive", "breaking", "report", "reports",
+            "기자", "속보", "단독", "종합", "오늘", "뉴스", "1보", "2보"}
+#  조사·어미 — 긴 것부터. 남는 말이 두 글자 밑이면 안 뗀다('평가'·'속도'·'물가' 는 그대로)
+_KO_TAIL = ("으로부터", "에서는", "에게서", "했다고", "한다고", "됐다고", "이라고", "라고",
+            "했어요", "했대요", "했어", "했대", "한대", "했다", "한다", "된다", "됐다", "됐어", "됐대",
+            "하며", "하고", "해서", "하나", "할까", "인가", "이다", "였다", "에서", "으로", "에게", "까지", "부터",
+            "에선", "에도", "이며", "보다", "처럼", "마저", "조차",
+            "에", "은", "는", "이", "가", "을", "를", "의", "와", "과", "도", "로", "만", "엔", "께", "랑")
+
+
+def _ko_stem(w):
+    for _ in range(3):                     # '정책실장에도' → '정책실장에' → '정책실장'
+        for tail in _KO_TAIL:
+            if w.endswith(tail) and len(w) - len(tail) >= 2:
+                w = w[: -len(tail)]
+                break
+        else:
+            break
+    return w
+
+
+@lru_cache(maxsize=8192)
+def _ev_tokens(title):
+    """제목 → {낱말: 무게}. 같은 제목은 다시 안 쪼갠다(본 것 수백 개와 매 바퀴 비교하므로)."""
+    t = re.sub(r"\s+-\s+[^-]{1,40}$", "", title or "").strip()           # " - 매체명"
+    t = re.sub(r"\s+(?:By|by)\s+[^,|]{1,30}$", "", t)                    # " By 인포스탁데일리"
+    t = re.sub(r"\s+\|\s+[^|]{1,40}$", "", t)                            # " | AI (artificial intelligence)"
+    t = re.sub(r"^\s*(?:exclusive|breaking|속보|단독)\s*[|:]\s*", "", t, flags=re.I)
+    for _ in range(2):
+        t = re.sub(r"^\s*[\[【(][^\]】)]{1,20}[\]】)]\s*", "", t)           # [속보] [AI는 지금] (종합)
+    for k, v in _CJK.items():
+        t = t.replace(k, v)
+    t = t.lower().replace("’", "'").replace("–", "-").replace("—", "-")
+    t = t.replace("오픈ai", " openai ").replace("챗gpt", " chatgpt ")        # 한글+영문이 붙은 이름
+    t = re.sub(r"\bs\s*&\s*p\b(?:\s*\d+)?", " sp500 ", t)
+    t = re.sub(r"(\d),(\d{3})", r"\1\2", t)                               # 3,800 → 3800
+    raw = re.findall(r"[a-z]+[0-9]*(?:\.[0-9]+)?|[0-9]+(?:\.[0-9]+)?(?:[월년배위건명]|분기)?|[가-힣]+", t)
+    seq = []
+    for w in raw:
+        if re.match(r"[가-힣]", w):
+            w = _ko_stem(w)
+        elif re.match(r"[a-z]", w) and len(w) > 3 and w.endswith("s") and not w.endswith(("ss", "us", "is")):
+            w = w[:-1]                                                    # stocks → stock
+        seq.append(_EV_ALIAS.get(w, w))
+    out = {}
+    for i, w in enumerate(seq):
+        if w in _EV_STOP:
+            continue
+        if re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", w):
+            if i > 0 and seq[i - 1] in _EV_PRODUCT:                        # gemini 4 → gemini4
+                out[seq[i - 1] + w] = 2.0
+            if "." in w or len(w) >= 2:
+                out[w] = 0.3 if w in _EV_LOW else 0.7
+            continue
+        if re.match(r"[0-9]", w):                                          # 11월 · 31년 · 3위
+            out[w] = 0.7
+            continue
+        m = re.fullmatch(r"([a-z]+)([0-9]+(?:\.[0-9]+)?)", w)             # gpt6 · qwen3.5
+        if m and m.group(1) in _EV_PRODUCT:
+            out[w] = 2.0
+            out[m.group(1)] = 0.6
+            continue
+        if len(w) >= 2:
+            out[w] = 0.3 if w in _EV_LOW else 0.6 if w in _EV_PRODUCT else 1.0
+    return out
+
+
+def _same_event(a, b):
+    ta, tb = _ev_tokens(a or ""), _ev_tokens(b or "")
+    if not ta or not tb:
+        return False
+    shared = sum(ta[w] for w in ta.keys() & tb.keys())
+    return shared >= 2.0 and shared >= 0.6 * min(sum(ta.values()), sum(tb.values()))
 
 
 def _cluster(items):
@@ -138,7 +270,7 @@ def _cluster(items):
     for it in items:
         tk = _tokens(it["title"])
         for g in groups:
-            if _similar(tk, g["tokens"]):
+            if _similar(tk, g["tokens"]):    # ★여긴 옛 판정 그대로 — 위 _same_event 머리말의 '묶기' 참고
                 g["items"].append(it)
                 g["sources"].add(it.get("source") or it.get("link", "")[:30])
                 break
@@ -677,7 +809,8 @@ def collect_ai(asked=False):
         lv = _level_from_cluster(n, bool(AI_EVENT.search(g["title"])), lv2=3, lv3=7)
         found.append({"cat": "ai", "level": lv, "title": g["title"],
                       "lang": g["items"][0].get("lang", "ko"), "why": f"{n}개 매체 보도",
-                      "url": g["items"][0].get("link", ""), "tokens": sorted(g["tokens"])})
+                      "url": g["items"][0].get("link", ""), "tokens": sorted(g["tokens"]),
+                      "alts": _alts(g)})
     found += _safe(src_geeknews)
     found += _safe(src_bluesky, "ai")
     found += _safe(src_mastodon, "ai", AI_TOPIC)
@@ -725,8 +858,10 @@ def collect_econ(asked=False):
                           "title": f"{name} {pct:+.2f}% {verb}",
                           "ko": ko,
                           "why": "Yahoo 실측", "url": "",
-                          # 같은 날·같은 종목은 한 사건 — 단계가 오를 때만 다시 알린다
-                          "key": f"mkt:{sym}:{datetime.now():%Y-%m-%d}",
+                          # 같은 거래일·같은 종목은 한 사건 — 단계가 오를 때만 다시 알린다.
+                          #  ★날짜는 '오늘'이 아니라 마지막 체결 시각(UTC)의 날짜. 오늘 날짜로 했더니 자정만 넘으면
+                          #    같은 등락을 또 알렸다 — 9/18 코스피 +2.66% 를 9/19 00:01·9/20 00:00(주말)에 다시.
+                          "key": f"mkt:{sym}:{_trade_day(r.get('time'))}",
                           "tokens": [sym.lower(), name]})
     except Exception:
         pass
@@ -742,7 +877,8 @@ def collect_econ(asked=False):
             continue                       # 사건어도 없고 보도도 적으면 소음
         found.append({"cat": "econ", "level": lv, "title": g["title"],
                       "lang": g["items"][0].get("lang", "ko"), "why": f"{n}개 매체 보도",
-                      "url": g["items"][0].get("link", ""), "tokens": sorted(g["tokens"])})
+                      "url": g["items"][0].get("link", ""), "tokens": sorted(g["tokens"]),
+                      "alts": _alts(g)})
     # 디시는 분야 단어 필터 필수 — 없으면 '대통령 티어표.jpg' 같은 밈이 추천 100+ 로 올라온다(2026-09-15)
     found += _safe(src_dcinside, "neostock", "board", "econ", 150, 60, "디시 주식갤", ECON_TOPIC)
     found += _safe(src_dcinside, "stockus", "mgallery/board", "econ", 150, 60, "디시 미주갤", ECON_TOPIC)
@@ -756,35 +892,81 @@ def collect_econ(asked=False):
 COLLECTORS = {"ai": collect_ai, "econ": collect_econ}
 
 
+def _trade_day(ts):
+    """시세의 마지막 체결 시각 → 거래일(UTC 날짜). 코스피 마감 15:30 KST·미장 마감 16:00 ET·코인/환율 하루 모두
+       UTC 로 같은 날에 떨어진다. 시각이 없으면 오늘."""
+    try:
+        return datetime.fromtimestamp(float(ts), timezone.utc).strftime("%Y-%m-%d")
+    except (TypeError, ValueError, OverflowError, OSError):
+        return datetime.now().strftime("%Y-%m-%d")
+
+
 # ═══════════════════════════════════════════════════════════════
-#  중복 제거 — 이미 알린 사건은 강도가 올라갔을 때만 다시
+#  중복 제거 — 이미 알린 사건은 다시 안 알린다
+#   · 뉴스·커뮤니티 = 같은 사건(_same_event)을 한 번 알렸으면(told) 매체 수·점수가 늘어도 다시 안 알린다.
+#     ★예전엔 '강도가 오르면 다시' 였다 — 같은 기사가 2개→4개 매체, 해커뉴스 250→600점이 될 때마다 또 울렸다
+#       (알림 기록 265건 중 같은 제목이 단계만 올라 다시 울린 것 11번: Bend·김학균·버핏·Astra 등).
+#     기준 미달이라 안 알리고 '본 것'으로만 둔 건(told 없음) 예전처럼 강도가 오르면 그때 알린다.
+#   · 시장 등락(mkt: 열쇠) = 같은 종목·거래일은 단계가 오를 때만 다시(+2% → +3.5% 는 새 소식이다).
+#   · 커뮤니티 글(열쇠=주소)도 내용으로 비교한다 — 예전엔 주소만 봐서, 해커뉴스로 알린 걸
+#     깃허브 트렌딩·허깅페이스로 또 알렸다(google/ax 9/22→9/23, Qwen Image 2.1 9/22 두 번).
 # ═══════════════════════════════════════════════════════════════
+def _is_mkt(x):
+    return str(x.get("key") or "").startswith("mkt:")
+
+
+def _alts(g):
+    """묶음에 들어간 기사 제목들(앞 8개). 묶음의 대표 제목은 판마다 RSS 순서 따라 바뀐다 —
+       대표 제목끼리만 비교하면 같은 묶음을 새 소식으로 볼 수 있어서, 겹치는 기사 제목이 하나라도 있으면 같은 사건."""
+    return [_clean_title(x["title"]) for x in g["items"][:8]]
+
+
+def _names(x):
+    return {t for t in [x.get("title")] + list(x.get("alts") or []) if t}
+
+
 def _filter_new(found, seen):
     now = time.time()
     seen[:] = [s for s in seen if now - s.get("t", 0) < SEEN_KEEP_H * 3600]
     fresh = []
     for it in sorted(found, key=lambda x: -x["level"]):
-        tk = set(it.get("tokens") or [])
         # ★처음 걸린 하나만 보면 안 된다 — 옛날에 낮게 본 기록이 먼저 걸리면 '강도가 올랐다'로 착각해
         #   이미 굵직으로 알린 걸 매 바퀴 다시 알렸다(2026-09-17, Emerald AI 3연속). 걸린 것 중 최고 강도와 비교.
-        prev = 0
+        mkt = _is_mkt(it)
+        names = _names(it)
+        prev, told = 0, False
         for s in seen + fresh:
             if s.get("cat") != it["cat"]:
                 continue
-            if (it.get("key") and s.get("key") == it.get("key")) or \
-               (not it.get("key") and not s.get("key") and _similar(tk, set(s.get("tokens") or []))):
+            if mkt or _is_mkt(s):
+                same = s.get("key") == it.get("key")
+            else:
+                same = ((it.get("key") and s.get("key") == it.get("key"))
+                        or bool(names & _names(s))                                # 같은 기사가 들어 있다
+                        or _same_event(it["title"], s.get("title"))
+                        or (s.get("ko") and _same_event(it["title"], s["ko"])))   # 영어로 알린 걸 한국어 기사로
+            if same:
                 prev = max(prev, s.get("level", 0))
-        if prev >= it["level"]:
+                told = told or bool(s.get("told"))
+        if (told and not mkt) or prev >= it["level"]:
             continue
         fresh.append(it)
     return fresh
 
 
-def _mark_seen(items, seen):
+def _mark_seen(items, seen, told=()):
+    """told = 실제로 알릴 항목들(id). 그건 다시 안 알린다(위 머리말)."""
     now = time.time()
+    told = {id(x) for x in told}
     for it in items:
-        seen.append({"cat": it["cat"], "level": it["level"], "key": it.get("key"),
-                     "tokens": it.get("tokens"), "title": it["title"], "t": now})
+        row = {"cat": it["cat"], "level": it["level"], "key": it.get("key"),
+               "tokens": it.get("tokens"), "title": it["title"], "t": now}
+        if id(it) in told:
+            row["told"] = True
+            if it.get("alts"):             # 알린 것만 — 본 것 파일이 2분마다 통째로 다시 써지니 크기를 아낀다
+                row["alts"] = it["alts"]
+        seen.append(row)
+        it["_seen"] = row                  # 알릴 때 붙는 한국어 한 줄(ko)을 나중에 여기에도 적으려고
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1306,10 +1488,19 @@ def replay(n=3, *, speak=True, show=True, log=print):
 # ═══════════════════════════════════════════════════════════════
 #  한 번 점검 — 자율모드 스레드가 주기적으로 부른다
 # ═══════════════════════════════════════════════════════════════
-def check(modes, *, gpu_busy_fn=None, quiet_hours=None, log=print, dry=False, baseline=False, alive=None):
+_check_lock = threading.Lock()
+
+
+def check(modes, **kw):
     """modes = {"ai":"굵직", "econ":"보통"} → 알린 건수 dict.
        baseline=True: 지금 떠 있는 건 '본 것'으로만 등록(처음 켤 때 몰아서 쏟아지는 것 방지).
-       alive(): 거짓이면 알리지 않는다 — 수집(~10초) 도중에 '소식 듣기'를 껐을 때. 본 것 등록은 그대로."""
+       alive(): 거짓이면 알리지 않는다 — 수집(~10초) 도중에 '소식 듣기'를 껐을 때. 본 것 등록은 그대로.
+       ★한 번에 하나 — '알림 지금'과 2분 점검이 겹치면 둘 다 같은 본 것 파일을 읽고 따로 알려 같은 걸 두 번 울렸다."""
+    with _check_lock:
+        return _check(modes, **kw)
+
+
+def _check(modes, *, gpu_busy_fn=None, quiet_hours=None, log=print, dry=False, baseline=False, alive=None):
     seen = _load(SEEN_FILE, [])
     busy, _ = gpu_busy_fn() if gpu_busy_fn else (False, "")
     hour = datetime.now().hour
@@ -1332,15 +1523,23 @@ def check(modes, *, gpu_busy_fn=None, quiet_hours=None, log=print, dry=False, ba
         new = _filter_new(found, seen)
         if baseline:
             _mark_seen(new, seen)
+            _save(SEEN_FILE, seen)
             result[cat] = 0
             continue
         hit = [x for x in new if x["level"] >= need][:5]
-        _mark_seen(new, seen)              # 기준 미달도 '봤음' — 나중에 강도 오르면 그때 알림
+        _mark_seen(new, seen, told=hit)    # 기준 미달도 '봤음' — 나중에 강도 오르면 그때 알림
+        #  ★알리기 전에 저장한다. 예전엔 두 분야를 다 돈 뒤 맨 끝에 한 번만 저장해서, AI 를 알리고 경제를 도는 사이
+        #    데몬을 껐다 켜면 AI 쪽 '본 것'이 통째로 날아가 다음 판에 같은 5건을 또 알렸다(10/01 15:26 → 15:31).
+        _save(SEEN_FILE, seen)
         if not hit or (alive and not alive()):
             result[cat] = 0
             continue
         _enrich(hit)
         _koreanize(hit, busy=busy)
+        for x in hit:                      # 한국어 한 줄도 본 것에 — 영어로 알린 사건이 한국어 기사로 다시 와도 알아보게
+            if x.get("ko") and x.get("_seen") is not None:
+                x["_seen"]["ko"] = x["ko"]
+        _save(SEEN_FILE, seen)
         if alive and not alive():          # 내용·번역 받는 사이(수 초~수십 초)에 꺼졌으면 여기서도 멈춘다
             result[cat] = 0
             continue
