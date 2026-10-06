@@ -598,7 +598,7 @@ def synth_ayaka(text: str, timeout: float = 30.0):
         return None
 
 
-_hush = threading.Event()      # 말걸기 창 Esc — 읽는 중이면 끊고, 합성 중이면 안 읽는다
+_hush = threading.Event()      # 그만(Esc) — 읽는 중이면 끊고, 합성 중이면 안 읽는다
 
 
 # ── 말하는 차례 (한 번에 하나) ──────────────────────────────────
@@ -626,6 +626,119 @@ def stop_speaking():
         pass
 
 
+# ── Esc = 그만 — 말하는 동안은 어느 창이 앞에 있든 먹는다 ──────────
+#   ★2026-10-07 호윤: "내가 esc 눌렀는데 왜 음성이 계속 재생되는거지?"
+#     Esc 는 말걸기 창(ask_box)이 키보드를 쥐고 있을 때만 먹었다. 이슈 알림·아침 할 일·대화창 답·
+#     회의 결과는 끊을 길이 없었고, 형체(orb.py)는 Esc 에 저만 닫혀서 알아들은 것처럼 보였다.
+#   말하는 차례(합성~재생)를 쥔 동안만 저수준 키보드 훅을 건다 — 말걸기(Alt 두 번)와 같은 방식.
+#   키는 막지 않는다(보기만) — 그 Esc 는 원래 창에도 그대로 간다. 말 안 할 땐 훅 자체가 없다.
+ESC_STOPS = True
+ESC_GRACE = 2.0      # Esc 직후 이 안에 새로 들어온 말도 버린다 — '뉴스'·'알림 다시'는 분야별로 잇따라 읽어서
+                     #   앞 건만 끊으면 곧바로 다음 건이 나온다(= 안 멈춘 것처럼 들린다)
+VK_ESCAPE = 0x1B
+
+
+def _esc_fires(vk, flags, wparam):
+    """훅에 들어온 키 하나가 '그만' 인가. 훅과 떼어 둔 판정(테스트하려고 — autonomy.DoubleTap 처럼)."""
+    return (wparam in (0x100, 0x104)          # WM_KEYDOWN / WM_SYSKEYDOWN
+            and vk == VK_ESCAPE
+            and not flags & 0x10              # 프로그램이 흉내 낸 키(LLKHF_INJECTED)는 무시 — 말걸기 훅과 같은 규칙
+            and not _hush.is_set())           # 이미 멈췄으면(누르고 있어 자동반복) 또 안 한다
+
+
+def _esc_pressed():
+    print("  [Esc] 말하던 것 멈춤")
+    stop_speaking()
+
+
+class _EscWatch:
+    """with _EscWatch(): ... — 그 사이 Esc 가 눌리면 stop_speaking(). 윈도우 전용, 훅이 실패해도 말하기는 그대로."""
+
+    def __init__(self):
+        self._done = threading.Event()
+        self._thread = None
+        self._tid = 0
+
+    def __enter__(self):
+        if ESC_STOPS and os.name == "nt":
+            ready = threading.Event()
+            self._thread = threading.Thread(target=self._run, args=(ready,), name="tts-esc", daemon=True)
+            self._thread.start()
+            ready.wait(1.0)
+        return self
+
+    def __exit__(self, *exc):
+        self._done.set()
+        if self._thread is not None:
+            if self._tid:
+                try:
+                    import ctypes
+                    ctypes.windll.user32.PostThreadMessageW(self._tid, 0x0012, 0, 0)   # WM_QUIT — 바로 깨운다
+                except Exception:
+                    pass
+            self._thread.join(1.0)
+        return False
+
+    def _run(self, ready):
+        try:
+            import ctypes
+            from ctypes import wintypes
+            #  ★windll.user32 를 그대로 쓰지 않는다 — 함수 argtypes 는 프로세스 전체가 같이 쓰는 값이라
+            #    autonomy.TalkMode 의 훅 선언과 엉킨다. 따로 불러온 사본에만 선언한다.
+            u32 = ctypes.WinDLL("user32", use_last_error=True)
+            k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            LRESULT = ctypes.c_ssize_t
+            PROC = ctypes.WINFUNCTYPE(LRESULT, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
+
+            class KBD(ctypes.Structure):
+                _fields_ = [("vkCode", wintypes.DWORD), ("scanCode", wintypes.DWORD),
+                            ("flags", wintypes.DWORD), ("time", wintypes.DWORD),
+                            ("dwExtraInfo", ctypes.c_size_t)]
+
+            u32.SetWindowsHookExW.restype = wintypes.HHOOK
+            u32.SetWindowsHookExW.argtypes = (ctypes.c_int, PROC, wintypes.HINSTANCE, wintypes.DWORD)
+            u32.CallNextHookEx.restype = LRESULT
+            u32.CallNextHookEx.argtypes = (wintypes.HHOOK, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
+            u32.UnhookWindowsHookEx.argtypes = (wintypes.HHOOK,)
+            u32.SetTimer.restype = ctypes.c_size_t
+            u32.SetTimer.argtypes = (wintypes.HWND, ctypes.c_size_t, wintypes.UINT, ctypes.c_void_p)
+            u32.KillTimer.argtypes = (wintypes.HWND, ctypes.c_size_t)
+            u32.GetMessageW.argtypes = (ctypes.POINTER(wintypes.MSG), wintypes.HWND, wintypes.UINT, wintypes.UINT)
+
+            def on_key(code, wparam, lparam):
+                try:
+                    if code == 0:
+                        kb = ctypes.cast(lparam, ctypes.POINTER(KBD)).contents
+                        if _esc_fires(kb.vkCode, kb.flags, wparam):
+                            # 훅 안에서 오래 머물면 PC 전체 키 입력이 굳는다 — 끊는 건 딴 스레드에서
+                            threading.Thread(target=_esc_pressed, name="tts-esc-stop", daemon=True).start()
+                except Exception:
+                    pass
+                return u32.CallNextHookEx(None, code, wparam, lparam)
+
+            proc = PROC(on_key)                  # 참조를 쥐고 있어야 GC 가 콜백을 안 치운다
+            msg = wintypes.MSG()
+            u32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 0)   # 메시지 큐부터 만든다(WM_QUIT 을 받을 수 있게)
+            self._tid = k32.GetCurrentThreadId()
+            hook = u32.SetWindowsHookExW(13, proc, None, 0)      # WH_KEYBOARD_LL
+            if not hook:
+                print(f"  [Esc 훅 실패] 오류 {ctypes.get_last_error()} — 이번 말은 Esc 로 못 끊는다")
+                return
+            timer = u32.SetTimer(None, 0, 100, None)   # 0.1초마다 깨서 '말 끝났나' 본다 — WM_QUIT 을 놓쳐도 안 남게
+            try:
+                ready.set()
+                while not self._done.is_set() and u32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+                    pass
+            finally:
+                if timer:
+                    u32.KillTimer(None, timer)
+                u32.UnhookWindowsHookEx(hook)
+        except Exception as e:
+            print(f"  [Esc 훅 오류] {e}")
+        finally:
+            ready.set()
+
+
 class Mouth:
     def __init__(self, voice: str = TTS_VOICE, rate: str = TTS_RATE, gain: float = TTS_GAIN):
         self.voice = voice
@@ -635,8 +748,11 @@ class Mouth:
     def speak(self, text: str, drop_if_busy: bool = False):
         """차례를 기다렸다가 읽는다. 읽었으면 True.
            drop_if_busy=True(이슈 알림 같은 뒷전 소식)면 줄이 길 때 그냥 버린다 —
-           묵은 뉴스를 몇 분 뒤에 우르르 읽어주는 게 더 이상하다."""
+           묵은 뉴스를 몇 분 뒤에 우르르 읽어주는 게 더 이상하다.
+           Esc(그만) 전에 들어왔거나 Esc 직후(ESC_GRACE) 이어 들어온 말은 안 읽는다."""
         global _waiting
+        called_at = time.time()              # ★정리 전에 잰다 — 한글 소리 찾기가 모델을 부르면 수 초 걸려
+                                             #   'Esc 전에 온 말' 이 'Esc 뒤에 온 말' 로 보였다
         if TTS_ENGINE == "ayaka":
             text = speak_numbers(text)       # clean_for_speech 가 ~·- 를 지우기 전에
         clean = speak_hangul(clean_for_speech(text))   # 정리 뒤에 — 링크·코드는 이미 빠져 있다
@@ -647,14 +763,14 @@ class Mouth:
             if drop_if_busy and _waiting >= MAX_WAITING:
                 return False
             _waiting += 1
-        queued_at = time.time()
         try:
             with _say_lock:                  # ★소리내는 구간은 한 번에 하나
-                if queued_at < _stop_at:     # 기다리는 사이에 '그만' 이 눌렸다
+                if called_at < _stop_at + ESC_GRACE:   # 기다리는 사이에 '그만' — 또는 그 직후 이어 온 말
                     return False
                 _hush.clear()
                 try:
-                    asyncio.run(self._speak(clean))
+                    with _EscWatch():        # 합성~재생 동안 Esc 를 어느 창에서든 받는다
+                        asyncio.run(self._speak(clean))
                 except Exception as e:
                     print(f"  [TTS 오류] {e}")
                     return False
@@ -682,8 +798,11 @@ class Mouth:
             try:
                 if SHOW_ORB:
                     show_orb(data, sr)       # 형체 먼저 띄우고(첫 프레임까지 대기)
-                sd.play(data, sr)
-                sd.wait()
+                if not _hush.is_set():       # 형체 뜨길 기다리는 사이(최대 2.5초)에 Esc 가 왔으면 안 튼다
+                    sd.play(data, sr)
+                    if _hush.is_set():       # play 와 엇갈린 '그만' — 그쪽 sd.stop() 은 앞 스트림에 갔다
+                        sd.stop()
+                    sd.wait()
             finally:
                 ducker.off()
         finally:
