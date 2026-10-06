@@ -79,6 +79,46 @@ sys.stderr = _Tee(sys.stderr)
 print("═" * 55)
 print(f"[로그] 이 창의 내용은 logs/daemon-{time.strftime('%Y-%m-%d')}.log 에도 쌓인다")
 
+
+# ── 데몬은 한 PC 에 하나만 ──
+#   ★윈도우에선 두 번째 데몬이 8765 를 오류 없이 '같이' 잡는다 — HTTPServer 가 SO_REUSEADDR 를 켜기 때문
+#     (2026-10-07 실측: 같은 포트에 두 번째 ThreadingHTTPServer 가 그냥 붙었다). 그러면 요청이 두 데몬에
+#     엇갈려 가고, 둘이 각자 들고 있는 대화기록으로 comet_history.json 을 번갈아 통째로 덮어써 앞 대화를
+#     잊는다. 대화창 「소식 듣기」를 꺼도 그 요청이 알림을 안 쥔 쪽 데몬에 가면 소식은 계속 울린다.
+#     HANDOFF 의 "옛 데몬이 살아 있으면 … 옛 코드가 응답함" 이 이 모양이다.
+#   → 무거운 준비(프로필·Comet()·자율모드 복원)보다 먼저 이름 있는 뮤텍스로 막는다. 창을 X 로 닫아 죽어도
+#     윈도우가 뮤텍스를 같이 풀어 주니 남는 잠금이 없다. '재시작'(os.execv)은 옛 프로세스가 내려가는 데
+#     잠깐 걸려서 몇 초는 기다려 준다.
+def _only_one(name="Local\\COMET_DAEMON", wait=8.0):
+    """처음 뜬 데몬이면 뮤텍스 핸들(끝까지 쥐고 있는다), 다른 데몬이 이미 떠 있으면 None.
+       윈도우가 아니거나 뮤텍스를 못 만들면 True — 막지 않고 그냥 뜬다(못 뜨는 것보다 낫다)."""
+    if os.name != "nt":
+        return True
+    import ctypes
+    from ctypes import wintypes
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)    # 따로 불러온 사본 — argtypes 가 남과 안 엉키게
+    k32.CreateMutexW.restype = wintypes.HANDLE
+    k32.CreateMutexW.argtypes = (ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR)
+    k32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    dead = time.time() + wait
+    while True:
+        h = k32.CreateMutexW(None, False, name)
+        if not h:
+            return True
+        if ctypes.get_last_error() != 183:                   # ERROR_ALREADY_EXISTS 가 아니면 우리가 처음
+            return h
+        k32.CloseHandle(h)
+        if time.time() >= dead:
+            return None
+        time.sleep(0.5)
+
+
+_ONE = _only_one()
+if _ONE is None:
+    print("[데몬] 다른 COMET 데몬이 이미 떠 있다 — 이 창은 그냥 닫으면 된다.")
+    print("       (둘이 같이 돌면 대화기록·소식 알림이 꼬인다. 새 코드로 바꾸려면 떠 있는 데몬 창을 먼저 닫고 다시 켤 것)")
+    sys.exit(0)
+
 # 데몬 기동 시 호윤 최신 메모리 → profile/ 자동 동기화 (코멧이 항상 최신으로 깨어남).
 #  ★comet import 전에 해야 SYSTEM(_PROFILE)이 갱신본을 로드한다. 복사·갱신만(미러 아님=안전).
 try:
@@ -98,10 +138,55 @@ _comet = comet.Comet()
 _comet.auto_approve = True        # 데몬(폰)은 input() 불가 → 자동승인. 콘솔은 False(기본).
 _lock = threading.Lock()          # 단일 사용자 — 요청 직렬화로 history 보호
 _comet.autonomy.modes["talk"].lock = _lock   # Alt 두 번 말걸기도 폰 요청과 같은 줄에 선다
+
+
+# ── 창을 X 로 닫아도, 줄여 둔 다른 앱 볼륨은 되돌리고 죽는다 ──
+#   ★X 로 닫으면 파이썬 finally·atexit 이 안 돈다(그 자리에서 죽음). 코멧이 말하는 도중에 닫으면 다른 앱이
+#     20% 로 줄어든 채 남고, 다음에 데몬을 켤 때에야 아래 recover() 가 되돌렸다 — 로그의 '[덕킹] 지난번에
+#     줄인 채 끝난 앱 볼륨을 되돌림'(9/23 01:40 · 10/01 15:22 · 10/07 07:15). 10/07 은 06:02 에 말하는 도중
+#     닫고 07:15 에 다시 켤 때까지 73분 동안 줄어 있었다.
+#   윈도우는 창을 닫을 때 '콘솔 닫기' 신호를 보내고 처리기가 끝날 때까지 몇 초 기다려 준다 — 거기서 같은 recover().
+#   Ctrl+C 도 이 처리기를 지난다. '안 받은 걸로'(False) 돌려줘서 원래 동작(종료·KeyboardInterrupt)은 그대로.
+_CTRL_HANDLER = None
+
+
+def _on_console_close(kind):
+    """콘솔 신호 처리기 — 0 Ctrl+C · 1 Ctrl+Break · 2 창 닫기 · 5 로그오프 · 6 종료. 윈도우가 따로 만든 스레드에서 돈다."""
+    try:
+        d = _voice.ducker
+        got = d.lock.acquire(timeout=1.0)     # on() 은 lock 을 쥔 채 줄인다 — 줄이는 중(0.15초)이면 다 줄인 뒤에
+        try:                                  # (줄이다 만 값은 recover 가 '내가 바꾼 것'으로 보고 안 되돌린다)
+            n = d.recover()                   # 파일에 적어 둔 원래 값으로 · 그 사이 내가 바꾼 앱은 안 건드림
+        finally:
+            if got:
+                d.lock.release()
+        if n:
+            print(f"[덕킹] 끄는 중 — 줄여 둔 앱 볼륨 {n}개 되돌림")
+    except Exception:
+        pass
+    return False
+
+
+def _hook_console_close():
+    global _CTRL_HANDLER
+    if os.name != "nt" or _CTRL_HANDLER is not None:
+        return False
+    import ctypes
+    from ctypes import wintypes
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    PROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)
+    k32.SetConsoleCtrlHandler.argtypes = (PROC, wintypes.BOOL)
+    k32.SetConsoleCtrlHandler.restype = wintypes.BOOL
+    _CTRL_HANDLER = PROC(_on_console_close)   # 참조를 쥐고 있어야 GC 가 콜백을 안 치운다
+    return bool(k32.SetConsoleCtrlHandler(_CTRL_HANDLER, True))
+
+
 try:
     import voice as _voice
     if _voice.ducker.recover():
         print("[덕킹] 지난번에 줄인 채 끝난 앱 볼륨을 되돌림")
+    if not _hook_console_close() and os.name == "nt":
+        print("[덕킹] 창 닫기 처리기를 못 걸었다 — 말하는 도중 닫으면 다음에 켤 때 되돌린다")
 except Exception as _e:
     print(f"[덕킹] 복구 건너뜀: {_e}")
 try:
@@ -482,6 +567,13 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+class _Server(ThreadingHTTPServer):
+    # ★SO_REUSEADDR 를 끈다 — 윈도우에선 이게 켜져 있으면 남이 쥔 포트에도 '같이' 붙는다(위 _only_one).
+    #   끄면 이미 쥔 포트는 10048 로 실패한다. 방금 닫은 데몬이 남긴 TIME_WAIT 는 윈도우에선 바인드를 안 막는다
+    #   (10/07 실측 — 연결을 받고 닫은 직후 다시 바인드 성공). 뮤텍스가 없는 옛 데몬과 겹칠 때의 마지막 방어선.
+    allow_reuse_address = False
+
+
 def _lan_ip():
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -505,7 +597,14 @@ def main():
     print("  ─────────────────────────────────────")
     print("  (Ctrl+C 종료. 방화벽이 막으면 '사설 네트워크 허용')")
     print("═" * 55)
-    ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
+    try:
+        srv = _Server((HOST, PORT), Handler)
+    except OSError as e:
+        print(f"[데몬] {PORT} 포트를 다른 프로세스가 쥐고 있다 — {e}")
+        print("       옛 데몬 창이 남아 있으면 그 창을 닫고 다시 켤 것. 이 창은 닫으면 된다.")
+        sys.stdout.flush()
+        os._exit(1)        # 이미 띄운 자율모드 스레드(소식·말걸기·브리핑)까지 같이 내린다 — 포트 없이 알림만 울리지 않게
+    srv.serve_forever()
 
 
 if __name__ == "__main__":
