@@ -115,14 +115,16 @@ def _pct(p):
     return "—" if p is None else f"{p:+.2f}%"
 
 
-def _row(name, p, width=6, tag=""):
+def _row(name, p, width=6, tag="", strong=False, strong_tag=False):
     """폰 한 줄 — '📈 +3.67% 브로드컴 · 반도체'. 숫자를 이름 앞 고정폭(<code>)에 둬서 줄끼리 숫자 열을
        맞춘다. 폰 글꼴은 글자마다 폭이 달라 이름 뒤에 숫자를 두면 띄어쓰기로는 절대 안 맞는다(호윤 10/07).
        width = 이 메시지에서 제일 긴 등락 글자 수 — 짧은 건 앞을 띄워 소수점 자리를 맞춘다.
-       tag = 줄 끝 꼬리표(종목은 업종, 지수는 '52주 최고 종가').
-       ※텔레그램은 <code> 안에 굵게를 못 넣는다(엔티티 규칙) — 숫자는 굵게 대신 고정폭."""
-    return (f"{_mark(p)} <code>{_pct(p).rjust(width)}</code> {_esc(name)}"
-            + (f" · {_esc(tag)}" if tag else ""))
+       tag = 줄 끝 꼬리표(종목은 업종, 지수는 '52주 최고 종가'). strong/strong_tag = 이름/꼬리표 굵게.
+       ※텔레그램은 <code> 를 굵게로 감싸지도, 안에 굵게를 넣지도 못한다(엔티티 규칙) —
+         그래서 '중요한 건 진하게'(호윤 10/07)는 숫자 대신 이름·꼬리표에 건다."""
+    b = lambda s, on: f"<b>{_esc(s)}</b>" if on else _esc(s)
+    return (f"{_mark(p)} <code>{_pct(p).rjust(width)}</code> {b(name, strong)}"
+            + (f" · {b(tag, strong_tag)}" if tag else ""))
 
 
 # ── 세션: 지금 다루는 게 어느 날 정규장인가 ─────────────────────────
@@ -344,12 +346,13 @@ def _evidence(data, today):
 
 SYNTH_SYS = (
     "너는 미국 증시 마감 브리핑의 '해석 칸'만 채운다. 지수·종목 숫자와 화면 모양은 코드가 따로 만든다.\n"
-    "[근거]만 보고 아래 JSON 하나만 출력해라. 앞뒤 설명·마크다운·코드펜스 금지.\n"
+    "[근거]만 보고 아래 JSON 하나만 출력해라. 앞뒤 설명·코드펜스 금지, 마크다운은 points 의 ** 표시만.\n"
     '{"summary": "...", "points": ["...", "..."], "movers": {"종목이름": "..."}, "mood": "..."}\n'
     "읽는 사람은 폰으로 본다 — 한 줄에 한글 20자 안팎이 들어간다. 글자 수를 꼭 지켜라.\n"
     "- summary: 오늘 장 성격, 폰 한 줄 = 20자 이내. 예) 금리 하락에 기술주 최고치\n"
     "- points: 오늘 장을 움직인 이유·흐름 최대 3개, 각 20자 이내(폰 한 줄), 하나에 한 가지. "
-    "이번 세션 기사에 있는 것만. 예) 국채금리 하락에 기술주 강세\n"
+    "이번 세션 기사에 있는 것만. 각 줄에서 제일 중요한 말 한 군데만 **두 별표**로 감싸라"
+    "(화면에서 굵게 된다). 예) **국채금리 하락**에 기술주 강세\n"
     "- movers: [크게 움직인 종목] 중 이번 세션 기사에 그 종목 이름이 직접 나오고 움직인 이유가 적힌 것만 "
     '{"종목이름": "이유 18자 이내"}. \'업종 흐름에 동반\' 같은 추측은 넣지 마라. 하나도 없으면 {}.\n'
     "- mood: 공포·탐욕 세부지표가 '뜻하는' 분위기, 36자 이내(폰 두 줄). 어느 지표가 극단인지 나열은 코드가 "
@@ -362,14 +365,15 @@ SYNTH_SYS = (
     "- 사실은 기사대로, 네 추론은 '~로 보임'으로 끝내라. 과장 형용사·감탄 금지, 담백하게.\n"
     "- 말투는 기사 제목 같은 짧은 개조식(예: '금리 하락에 기술주 강세'). '~습니다'·'~했어' 어미 금지.\n"
     "- 근거가 빈약하면 points·movers 를 줄이거나 비워라. 지어내지 마라.\n"
-    "- HTML·이모지·줄바꿈 금지.")
+    "- HTML·이모지·줄바꿈 금지(points 의 ** 표시만 예외).")
 
 AUDIT_SYS = (
     "너는 냉정한 사실 감사관이다. [초안 JSON]을 [근거]와 대조해 고친 JSON 하나만 낸다(같은 키, 설명 금지).\n"
     "- 근거의 '이번 세션 기사'에 없는 사건·인과는 지운다. 전망·추천 글을 이유로 쓴 줄도 지운다.\n"
     "- 단정한 인과('때문에')는 '~영향으로 보임'으로 낮춘다.\n"
     "- 등락률·지수값 같은 시세 숫자는 지운다(코드가 따로 붙인다).\n"
-    "- 글자 수(summary 20 · points 각 20 · movers 각 18 · mood 36)를 넘으면 줄인다 — 폰 한 줄이 한글 20자다.")
+    "- 글자 수(summary 20 · points 각 20 · movers 각 18 · mood 36)를 넘으면 줄인다 — 폰 한 줄이 한글 20자다.\n"
+    "- points 의 **중요한 말** 표시는 지우지 말고 둔다(줄마다 한 군데).")
 
 
 # ── 바쁠 때 우회하는 두뇌 = 호윤 구독 CLI(클로드 → 아스트라) ─────
@@ -481,15 +485,26 @@ def _grounded(s, ev_flat):
     return True
 
 
-def _tidy(s, hard):
+def _tidy(s, hard, marks=False):
     """모델 글 한 칸 → 깨끗한 한 줄, 또는 ''(버림). 글자가 아니면(객체·숫자·참거짓) 버리고,
-       태그·마크다운 기호를 지우고, hard 를 넘으면 버린다 — 중간을 자르면 말이 끊긴 채 나간다."""
+       태그·마크다운 기호를 지우고, hard 를 넘으면 버린다 — 중간을 자르면 말이 끊긴 채 나간다.
+       marks=True 면 '**중요한 말**' 표시는 남긴다(짝이 안 맞으면 다 지움) — 화면에서 굵게가 된다."""
     if not isinstance(s, str):
         return ""
     s = re.sub(r"<[^>]*>", "", s)
-    s = re.sub(r"[*`#]+", "", s)
+    s = re.sub(r"[`#]+", "", s)
+    parts = s.split("**")
+    if marks and len(parts) % 2 == 1:                  # '**' 가 짝수 개 = 짝이 맞음
+        s = "**".join(p.replace("*", "") for p in parts)
+    else:
+        s = s.replace("*", "")
     s = re.sub(r"\s+", " ", s).strip(" -·•")
-    return s if len(s) <= hard else ""
+    return s if len(s.replace("**", "")) <= hard else ""
+
+
+def _strong(s):
+    """이스케이프한 뒤 '**말**' → <b>말</b>. 모델이 이유마다 하나씩 표시한 '중요한 말'."""
+    return re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", _esc(s))
 
 
 def _match_mover(key, movers):
@@ -519,7 +534,7 @@ def _clean(d, data, evidence):
         out["summary"] = s
     pts = d.get("points") or []
     for p in ([pts] if isinstance(pts, str) else pts if isinstance(pts, list) else []):
-        p = _tidy(p, HARD["point"])
+        p = _tidy(p, HARD["point"], marks=True)
         if p and _grounded(p, flat) and p not in out["points"]:
             out["points"].append(p)
     out["points"] = out["points"][:3]
@@ -563,7 +578,7 @@ def _detail_sections(data, txt, picks, failed=False, w=6):
     """접힌 인용 안에 들어갈 칸들 [(제목, [줄]), ...] — 중요한 순. 넘치면 뒤에서부터 뺀다.
        첫 칸은 제목 없이 — 접힌 상태에서도 첫 몇 줄이 보이므로 거기에 핵심 이유를 둔다."""
     secs = []
-    pts = [f"· {_esc(p)}" for p in txt["points"]]
+    pts = [f"· {_strong(p)}" for p in txt["points"]]
     empty = "· 해석을 못 붙임(모델 답 형식 깨짐) — 숫자만 정리" if failed else \
             "· 이번 장 기사에서 확인된 이유 없음 — 숫자만 정리"
     secs.append(("", pts or [empty]))
@@ -615,13 +630,14 @@ def render(data, txt, brain, note=""):
     # 숫자 열 폭 = 이 메시지의 모든 등락 중 제일 긴 것 — 지수·종목·접힌 칸까지 한 폭으로 맞춘다
     w = max([len(_pct(x["pct"])) for x in data["indices"] + data["movers"]] or [6])
     head = [f"<b>미국 증시 · {_when(s) if s else '최근 장'}</b>",
-            _esc(txt.get("summary") or _code_summary(data)), ""]
+            f"<b>{_esc(txt.get('summary') or _code_summary(data))}</b>", ""]   # 한 줄 판단 = 제일 중요
     for r in data["indices"]:
-        head.append(_row(r["name"], r["pct"], w, "52주 최고 종가" if r["high"] else ""))
+        head.append(_row(r["name"], r["pct"], w, "52주 최고 종가" if r["high"] else "",
+                         strong_tag=True))
     picks = _pick_movers(data["movers"])
     if picks:
         head += ["", "<b>크게 움직인 종목</b>"]
-        head += [_row(m["name"], m["pct"], w, SECTOR.get(m["sym"], "")) for m in picks]
+        head += [_row(m["name"], m["pct"], w, SECTOR.get(m["sym"], ""), strong=True) for m in picks]
     fg = data.get("fg") or {}
     if fg.get("ok"):
         line = (f"공포·탐욕 <b>{fg['value']} "
