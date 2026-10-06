@@ -46,6 +46,12 @@ MOVERS = [("NVDA", "엔비디아"), ("AMD", "AMD"), ("TSM", "TSMC"), ("MU", "마
           ("AVGO", "브로드컴"), ("INTC", "인텔"), ("QCOM", "퀄컴"), ("ARM", "ARM"),
           ("AAPL", "애플"), ("MSFT", "마이크로소프트"), ("AMZN", "아마존"),
           ("TSLA", "테슬라"), ("GOOGL", "알파벳"), ("META", "메타")]
+# 업종 — 종목 줄 끝에 '📈 +3.67% 브로드컴 · 반도체' 처럼 붙는다(호윤 요청 10/07). 굵게 세 갈래만:
+#  더 잘게(메모리·파운드리…) 나누면 폰 한 줄을 넘고, 한눈에 '반도체가 빠졌나'를 보려는 목적엔 이걸로 충분.
+SECTOR = {"NVDA": "반도체", "AMD": "반도체", "TSM": "반도체", "MU": "반도체", "AVGO": "반도체",
+          "INTC": "반도체", "QCOM": "반도체", "ARM": "반도체",
+          "AAPL": "빅테크", "MSFT": "빅테크", "AMZN": "빅테크", "GOOGL": "빅테크", "META": "빅테크",
+          "TSLA": "전기차"}
 # 영문 기사에서 종목을 알아볼 이름 — '종목별 이유'는 이번 장 기사에 그 종목이 실제로 나올 때만 받는다
 MOVER_EN = {"NVDA": "Nvidia", "AMD": "Advanced Micro", "TSM": "Taiwan Semiconductor",
             "MU": "Micron", "AVGO": "Broadcom", "INTC": "Intel", "QCOM": "Qualcomm",
@@ -109,12 +115,14 @@ def _pct(p):
     return "—" if p is None else f"{p:+.2f}%"
 
 
-def _row(name, p, width=6):
-    """폰 한 줄 — '📈 +3.67% 브로드컴'. 숫자를 이름 앞 고정폭(<code>)에 둬서 줄끼리 숫자 열을 맞춘다.
-       폰 글꼴은 글자마다 폭이 달라 이름 뒤에 숫자를 두면 띄어쓰기로는 절대 안 맞는다(호윤 요청 10/07).
+def _row(name, p, width=6, tag=""):
+    """폰 한 줄 — '📈 +3.67% 브로드컴 · 반도체'. 숫자를 이름 앞 고정폭(<code>)에 둬서 줄끼리 숫자 열을
+       맞춘다. 폰 글꼴은 글자마다 폭이 달라 이름 뒤에 숫자를 두면 띄어쓰기로는 절대 안 맞는다(호윤 10/07).
        width = 이 메시지에서 제일 긴 등락 글자 수 — 짧은 건 앞을 띄워 소수점 자리를 맞춘다.
+       tag = 줄 끝 꼬리표(종목은 업종, 지수는 '52주 최고 종가').
        ※텔레그램은 <code> 안에 굵게를 못 넣는다(엔티티 규칙) — 숫자는 굵게 대신 고정폭."""
-    return f"{_mark(p)} <code>{_pct(p).rjust(width)}</code> {_esc(name)}"
+    return (f"{_mark(p)} <code>{_pct(p).rjust(width)}</code> {_esc(name)}"
+            + (f" · {_esc(tag)}" if tag else ""))
 
 
 # ── 세션: 지금 다루는 게 어느 날 정규장인가 ─────────────────────────
@@ -297,7 +305,8 @@ def _evidence(data, today):
                      for r in data["indices"]) or "(지수 수집 실패)",
           "",
           "[종목 — Yahoo 실측]",
-          " · ".join(f"{m['name']}({m['sym']}) {m['pct']:+.2f}%" for m in data["movers"])
+          " · ".join(f"{m['name']}({m['sym']}·{SECTOR.get(m['sym'], '')}) {m['pct']:+.2f}%"
+                     for m in data["movers"])
           or "(종목 수집 실패)"]
     picks = _pick_movers(data["movers"])
     if picks:
@@ -562,7 +571,7 @@ def _detail_sections(data, txt, picks, failed=False, w=6):
     why = []
     for sym, v in sorted(txt["movers"].items(), key=lambda kv: -abs(names[kv[0]]["pct"])):
         # 종목 줄은 짧게 두고 이유는 다음 줄로 — 한 줄에 몰면 폰에서 아무 데서나 접힌다
-        why += [_row(names[sym]["name"], names[sym]["pct"], w), f"└ {_esc(v)}"]
+        why += [_row(names[sym]["name"], names[sym]["pct"], w, SECTOR.get(sym, "")), f"└ {_esc(v)}"]
     if why:
         secs.append(("종목별 이유", why))
     fg = data.get("fg") or {}
@@ -582,7 +591,8 @@ def _detail_sections(data, txt, picks, failed=False, w=6):
     shown = {m["sym"] for m in picks}
     rest = sorted((m for m in data["movers"] if m["sym"] not in shown), key=lambda m: -m["pct"])
     if rest:
-        secs.append(("그 외 종목", [_row(m["name"], m["pct"], w) for m in rest]))   # 한 줄에 하나
+        secs.append(("그 외 종목", [_row(m["name"], m["pct"], w, SECTOR.get(m["sym"], ""))
+                                   for m in rest]))                     # 한 줄에 하나
     links = []
     for it in data["news"][:4]:
         href = (it.get("link") or "").replace("&", "&amp;").replace('"', "&quot;")
@@ -607,11 +617,11 @@ def render(data, txt, brain, note=""):
     head = [f"<b>미국 증시 · {_when(s) if s else '최근 장'}</b>",
             _esc(txt.get("summary") or _code_summary(data)), ""]
     for r in data["indices"]:
-        head.append(_row(r["name"], r["pct"], w) + (" · 52주 최고 종가" if r["high"] else ""))
+        head.append(_row(r["name"], r["pct"], w, "52주 최고 종가" if r["high"] else ""))
     picks = _pick_movers(data["movers"])
     if picks:
         head += ["", "<b>크게 움직인 종목</b>"]
-        head += [_row(m["name"], m["pct"], w) for m in picks]
+        head += [_row(m["name"], m["pct"], w, SECTOR.get(m["sym"], "")) for m in picks]
     fg = data.get("fg") or {}
     if fg.get("ok"):
         line = (f"공포·탐욕 <b>{fg['value']} "
