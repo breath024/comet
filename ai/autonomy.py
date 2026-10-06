@@ -172,7 +172,7 @@ class ProactiveMode(_Mode):
 # ═══════════════════════════════════════════════════════════════
 class BriefMode(_Mode):
     name = "brief"
-    desc = "매일 아침 미증시 브리핑을 폰으로 (GPU 바쁘면 클로드·아스트라로 우회)"
+    desc = "매일 아침 미증시 브리핑을 폰으로 (클로드·아스트라 먼저, 막히면 로컬)"
 
     def __init__(self, cfg, log, gpu_busy_fn=None, save_fn=None):
         super().__init__(cfg, log)
@@ -248,7 +248,7 @@ class BriefMode(_Mode):
         from datetime import datetime
         hour = int(self.cfg.get("hour", 7))
         check = max(60, int(self.cfg.get("check_sec", 600)))
-        self.log(f"[brief] 가동 — 매일 {hour}시 이후 미증시 브리핑(27b, 바쁘면 클라우드 우회)")
+        self.log(f"[brief] 가동 — 매일 {hour}시 이후 미증시 브리핑(클로드·아스트라 먼저, 막히면 로컬)")
         while not self._stop.wait(check):
             try:
                 today = self._today()
@@ -258,15 +258,11 @@ class BriefMode(_Mode):
                     continue                         # 오늘 이미 보냄
                 if datetime.now().hour < hour:
                     continue                         # 아직 이른 시각
-                # GPU 양보: 게임 등으로 바쁘면 로컬 27b 대신 구독 CLI(클로드→아스트라)로 우회한다.
-                #  ★예전엔 미루기만 했다 — 바쁜 날은 브리핑이 아예 안 왔다. 호윤: "사실상 로컬로만
-                #    돌아가지 않아도 괜찮음"(2026-09-18). 클라우드도 실패하면 그때는 미룬다.
-                via = "local"
-                if self.gpu_busy_fn:
-                    busy, info = self.gpu_busy_fn()
-                    if busy:
-                        via = "cloud"
-                        self.log(f"[brief] GPU 바쁨({info}) — 클라우드 두뇌로 우회")
+                # 두뇌: 구독 CLI(클로드→아스트라)가 먼저, 둘 다 실패하면 로컬 26b(generate 안에서).
+                #  ★2026-10-07 로컬 먼저 → 클라우드 먼저로 뒤집었다. 아침마다 로컬 26b(13GB)를 올리면
+                #    아야카·Whisper 와 16GB 를 다투다 아야카가 굳었다(호윤: "TTS 개에반데"). 호윤 지시도
+                #    "claude 나 gpt 로 해결할 수 있는 건 그쪽 cli 로". (9/18: "로컬로만 안 돌아도 괜찮음")
+                via = "cloud"
                 if not notify.configured():
                     self.log("[brief] 텔레그램 미설정 — 브리핑 보류")
                     continue

@@ -682,17 +682,21 @@ def generate(model=BRIEF_MODEL, verbose=False, via="local", log=None):
     if verbose:
         print(evidence, "\n", "=" * 40)
 
+    d, brain = None, ""
     if via != "cloud":
         d, err = _local_brief(model, evidence)
-        brain = "로컬"
-        if err:
-            if log:
-                log(f"[brief] 로컬 실패({str(err)[:120]}) — 클로드·아스트라로 넘어감")
-            via = "cloud"
-    if via == "cloud":
+        brain = "" if err else "로컬"
+        if err and log:
+            log(f"[brief] 로컬 실패({str(err)[:120]}) — 클로드·아스트라로 넘어감")
+    if not brain:
         d, brain = _cloud_brief(evidence, log)
-        if not brain:
-            return {"ok": False, "msg": "클라우드 두뇌(클로드·아스트라) 둘 다 실패 — 다음 점검 재시도"}
+    if not brain and via == "cloud":          # 클라우드 먼저였는데 둘 다 막혔으면(한도 등) 로컬이 예비
+        if log:
+            log("[brief] 클로드·아스트라 둘 다 실패 — 로컬 26b 로")
+        d, err = _local_brief(model, evidence)
+        brain = "" if err else "로컬"
+    if not brain:
+        return {"ok": False, "msg": "두뇌(클로드·아스트라·로컬) 모두 실패 — 다음 점검 재시도"}
     txt = _clean(d, data, evidence)
     note = "" if d is not None else "해석 형식 깨짐 — 숫자만"
     s = data.get("session")
