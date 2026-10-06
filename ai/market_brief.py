@@ -109,10 +109,12 @@ def _pct(p):
     return "—" if p is None else f"{p:+.2f}%"
 
 
-def _row(name, p, bold=False):
-    """폰 한 줄 — '📈 브로드컴 +3.67%'. 이모지·이름·등락 사이는 띄어쓰기 한 칸으로 통일."""
-    v = f"<b>{_pct(p)}</b>" if bold else _pct(p)
-    return f"{_mark(p)} {_esc(name)} {v}"
+def _row(name, p, width=6):
+    """폰 한 줄 — '📈 +3.67% 브로드컴'. 숫자를 이름 앞 고정폭(<code>)에 둬서 줄끼리 숫자 열을 맞춘다.
+       폰 글꼴은 글자마다 폭이 달라 이름 뒤에 숫자를 두면 띄어쓰기로는 절대 안 맞는다(호윤 요청 10/07).
+       width = 이 메시지에서 제일 긴 등락 글자 수 — 짧은 건 앞을 띄워 소수점 자리를 맞춘다.
+       ※텔레그램은 <code> 안에 굵게를 못 넣는다(엔티티 규칙) — 숫자는 굵게 대신 고정폭."""
+    return f"{_mark(p)} <code>{_pct(p).rjust(width)}</code> {_esc(name)}"
 
 
 # ── 세션: 지금 다루는 게 어느 날 정규장인가 ─────────────────────────
@@ -548,7 +550,7 @@ def _code_summary(data):
 
 
 # ── 조립: 텔레그램 HTML 한 통 ──────────────────────────────────────
-def _detail_sections(data, txt, picks, failed=False):
+def _detail_sections(data, txt, picks, failed=False, w=6):
     """접힌 인용 안에 들어갈 칸들 [(제목, [줄]), ...] — 중요한 순. 넘치면 뒤에서부터 뺀다.
        첫 칸은 제목 없이 — 접힌 상태에서도 첫 몇 줄이 보이므로 거기에 핵심 이유를 둔다."""
     secs = []
@@ -560,7 +562,7 @@ def _detail_sections(data, txt, picks, failed=False):
     why = []
     for sym, v in sorted(txt["movers"].items(), key=lambda kv: -abs(names[kv[0]]["pct"])):
         # 종목 줄은 짧게 두고 이유는 다음 줄로 — 한 줄에 몰면 폰에서 아무 데서나 접힌다
-        why += [_row(names[sym]["name"], names[sym]["pct"]), f"└ {_esc(v)}"]
+        why += [_row(names[sym]["name"], names[sym]["pct"], w), f"└ {_esc(v)}"]
     if why:
         secs.append(("종목별 이유", why))
     fg = data.get("fg") or {}
@@ -580,7 +582,7 @@ def _detail_sections(data, txt, picks, failed=False):
     shown = {m["sym"] for m in picks}
     rest = sorted((m for m in data["movers"] if m["sym"] not in shown), key=lambda m: -m["pct"])
     if rest:
-        secs.append(("그 외 종목", [_row(m["name"], m["pct"]) for m in rest]))   # 한 줄에 하나
+        secs.append(("그 외 종목", [_row(m["name"], m["pct"], w) for m in rest]))   # 한 줄에 하나
     links = []
     for it in data["news"][:4]:
         href = (it.get("link") or "").replace("&", "&amp;").replace('"', "&quot;")
@@ -600,14 +602,16 @@ def render(data, txt, brain, note=""):
        자세한 해석은 접힌 인용 안. 모델 글은 전부 이스케이프해서 넣는다 — 모델이 '<' 하나만
        써도 텔레그램이 메시지를 통째로 거절하고, 그러면 브리핑이 하루 종일 재시도만 돈다."""
     s = data.get("session")
+    # 숫자 열 폭 = 이 메시지의 모든 등락 중 제일 긴 것 — 지수·종목·접힌 칸까지 한 폭으로 맞춘다
+    w = max([len(_pct(x["pct"])) for x in data["indices"] + data["movers"]] or [6])
     head = [f"<b>미국 증시 · {_when(s) if s else '최근 장'}</b>",
             _esc(txt.get("summary") or _code_summary(data)), ""]
     for r in data["indices"]:
-        head.append(_row(r["name"], r["pct"], bold=True) + (" · 52주 최고 종가" if r["high"] else ""))
+        head.append(_row(r["name"], r["pct"], w) + (" · 52주 최고 종가" if r["high"] else ""))
     picks = _pick_movers(data["movers"])
     if picks:
         head += ["", "<b>크게 움직인 종목</b>"]
-        head += [_row(m["name"], m["pct"], bold=True) for m in picks]
+        head += [_row(m["name"], m["pct"], w) for m in picks]
     fg = data.get("fg") or {}
     if fg.get("ok"):
         line = (f"공포·탐욕 <b>{fg['value']} "
@@ -617,7 +621,7 @@ def render(data, txt, brain, note=""):
         head += ["", line]
     # 꼬리말도 폰 한 줄 — 기사 수는 접힌 '기사' 칸에 있으니 뺐다. 이상이 있을 때만 둘째 줄
     foot = f"Yahoo·CNN 실측 · 해석 {_esc(brain)}" + (f"\n{_esc(note)}" if note else "")
-    secs = _detail_sections(data, txt, picks, failed=bool(note))
+    secs = _detail_sections(data, txt, picks, failed=bool(note), w=w)
     while True:
         body = "\n\n".join((f"<b>{t}</b>\n" if t else "") + "\n".join(ls) for t, ls in secs)
         text = "\n".join(head) + "\n"
