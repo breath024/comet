@@ -74,8 +74,9 @@ def ask_claude(prompt, timeout=300, tools="", cwd=None):
     return out
 
 
-def ask_astra(prompt, timeout=420, web=False):
-    """web=True 면 웹 검색을 켠다(codex 는 플래그가 아니라 설정값으로 켠다)."""
+def ask_astra(prompt, timeout=420, web=False, images=None):
+    """web=True 면 웹 검색을 켠다(codex 는 플래그가 아니라 설정값으로 켠다).
+       images = 같이 보낼 그림 파일 경로들(codex exec -i). 보유 화면 읽기(vision)가 쓴다."""
     exe = shutil.which("codex") or os.path.expanduser(
         r"~\AppData\Local\Programs\OpenAI\Codex\bin\codex.exe")
     with tempfile.TemporaryDirectory(prefix="comet_astra_") as cwd:
@@ -83,6 +84,8 @@ def ask_astra(prompt, timeout=420, web=False):
         args = [exe, "exec", "-m", ASTRA_MODEL, "--sandbox", "read-only", "--skip-git-repo-check"]
         if web:
             args += ["-c", "tools.web_search=true"]
+        for im in images or []:          # ★-o 앞에 둔다 — 맨 끝 '-'(표준입력)가 그림 값으로 먹히지 않게
+            args += ["-i", im]
         r = subprocess.run(args + ["-o", out_file, "-"],
                            input=prompt.encode("utf-8"), capture_output=True, cwd=cwd,
                            env=_child_env(), timeout=timeout, creationflags=_flags())

@@ -9,7 +9,11 @@ import ollama
 from PIL import ImageGrab
 
 VISION_MODEL = "gemma4:12b"     # 멀티모달. 더 정밀히 보려면 gemma4:26b
-HOLDINGS_MODEL = "gemma4:26b"  # 표·숫자 읽기는 정밀해야 하니 한 단계 위. 26b 도 vision 된다
+# 보유 화면 읽기 — 2026-10-07 부터 클로드 → 아스트라(구독 CLI)가 먼저 읽고, 로컬은 예비.
+#  예전 기본 'gemma4:26b'(Q4 18GB)는 16GB 에 안 올라가 9/22 이후 매번 실패했다. comet 의 Q3 26b 판은
+#  vision 이 없어서 못 쓴다 → 예비는 vision 되면서 들어가는 12b. 표 숫자는 클라우드가 훨씬 정확하다.
+#  (호윤: "claude 나 gpt 로 해결할 수 있는 것들은 그쪽 cli 불러서")
+HOLDINGS_MODEL = "gemma4:12b"
 MAX_WIDTH = 1280               # 캡처 축소 — 속도/토큰 절약
 
 # ── 안정성: 얼어붙은 ollama 대비 타임아웃 + 출력 상한(설명/표 폭주 차단). 27b 홀딩스라 300s.
@@ -76,21 +80,53 @@ def look(question: str = "", persona: str = "") -> str:
             os.remove(path)
 
 
-def read_holdings(model=None) -> dict:
-    """화면(증권사 보유 종목)을 캡처해 보유 내역을 표로 추출 → holdings.txt 저장.
-       analyst가 '내 보유 기준' 분석에 쓴다. 정밀 위해 기본 27b."""
-    path = capture_screen()
+def _read_with_brains(path, model=None):
+    """그림 한 장 → (보유표 글, 두뇌). 클로드(Read 로 그림을 연다) → 아스트라(-i 첨부) → 로컬 12b.
+       ★캡처는 화면 전체라 다른 창 내용도 같이 클라우드로 간다 — 보유 화면을 맨 앞에 띄우고 부를 것."""
+    import debate
+    errs = []
     try:
-        r = _chat(
-            model=model or HOLDINGS_MODEL, keep_alive="2m",
-            options={"num_predict": 1536},
-            messages=[{"role": "user", "content": HOLDINGS_PROMPT, "images": [path]}])
-        text = (r.get("message", {}).get("content", "") or "").strip()
+        out = debate.ask_claude(f"{HOLDINGS_PROMPT}\n\n읽을 그림 파일: {path}\n"
+                                "(Read 로 이 그림 하나만 열어 보고 다른 파일은 건드리지 마.)",
+                                timeout=240, tools="Read", cwd=os.path.dirname(path))
+        if out.strip():
+            return out.strip(), "클로드"
+    except Exception as e:
+        errs.append(f"클로드: {str(e)[:120]}")
+    try:
+        out = debate.ask_astra(HOLDINGS_PROMPT + "\n(첨부한 그림만 보고 답해. 파일은 건드리지 마.)",
+                               timeout=300, images=[path])
+        if out.strip():
+            return out.strip(), "아스트라"
+    except Exception as e:
+        errs.append(f"아스트라: {str(e)[:120]}")
+    r = _chat(model=model or HOLDINGS_MODEL, keep_alive="2m",
+              options={"num_predict": 1536, "num_ctx": 8192},
+              messages=[{"role": "user", "content": HOLDINGS_PROMPT, "images": [path]}])
+    out = (r.get("message", {}).get("content", "") or "").strip()
+    if errs:
+        print("  [보유] 클라우드 실패 → 로컬 12b:", " / ".join(errs))
+    return out, "로컬"
+
+
+def read_holdings(model=None, path=None) -> dict:
+    """화면(증권사 보유 종목)을 캡처해 보유 내역을 표로 추출 → holdings.txt 저장.
+       analyst가 '내 보유 기준' 분석에 쓴다. path 를 주면 그 그림을 읽는다(시험·폰 업로드용)."""
+    import shutil
+    tmp = tempfile.mkdtemp(prefix="comet_hold_")      # 클로드가 이 폴더 안에서만 돈다(cwd)
+    try:
+        if path:
+            img = os.path.join(tmp, "holdings" + (os.path.splitext(path)[1] or ".png"))
+            shutil.copy(path, img)
+        else:
+            cap = capture_screen()
+            img = os.path.join(tmp, "holdings.png")
+            shutil.move(cap, img)
+        text, who = _read_with_brains(img, model)
     except Exception as e:
         return {"ok": False, "msg": f"보유 화면 읽기 실패: {e}"}
     finally:
-        if os.path.exists(path):
-            os.remove(path)
+        shutil.rmtree(tmp, ignore_errors=True)
     if "보유 화면이 아님" in text or len(text) < 8:
         return {"ok": False, "msg": "보유 종목 화면이 안 보여. 증권사 보유 화면을 띄우고 다시 시도해줘."}
     try:
@@ -98,7 +134,7 @@ def read_holdings(model=None) -> dict:
             f.write(text)
     except Exception:
         pass
-    return {"ok": True, "text": text, "saved": HOLDINGS_FILE}
+    return {"ok": True, "text": text, "saved": HOLDINGS_FILE, "brain": who}
 
 
 def load_holdings():

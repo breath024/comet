@@ -1611,7 +1611,7 @@ class Comet:
             print(f"  [재무] {tk}")
             result = financials.dispatch(action, {"ticker": tk})
         elif action == "read_holdings":
-            print("  [보유] 화면 캡처 → 보유종목 읽는 중(27b)…")
+            print("  [보유] 화면 캡처 → 보유종목 읽는 중(클로드 → 아스트라 → 로컬 12b)…")
             import vision
             result = vision.read_holdings()
         elif action == "send_telegram":
