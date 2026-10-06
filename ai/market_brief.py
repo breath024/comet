@@ -25,7 +25,7 @@
 import re
 import json
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import ollama
 import prices
@@ -46,6 +46,11 @@ MOVERS = [("NVDA", "엔비디아"), ("AMD", "AMD"), ("TSM", "TSMC"), ("MU", "마
           ("AVGO", "브로드컴"), ("INTC", "인텔"), ("QCOM", "퀄컴"), ("ARM", "ARM"),
           ("AAPL", "애플"), ("MSFT", "마이크로소프트"), ("AMZN", "아마존"),
           ("TSLA", "테슬라"), ("GOOGL", "알파벳"), ("META", "메타")]
+# 영문 기사에서 종목을 알아볼 이름 — '종목별 이유'는 이번 장 기사에 그 종목이 실제로 나올 때만 받는다
+MOVER_EN = {"NVDA": "Nvidia", "AMD": "Advanced Micro", "TSM": "Taiwan Semiconductor",
+            "MU": "Micron", "AVGO": "Broadcom", "INTC": "Intel", "QCOM": "Qualcomm",
+            "ARM": "Arm Holdings", "AAPL": "Apple", "MSFT": "Microsoft", "AMZN": "Amazon",
+            "TSLA": "Tesla", "GOOGL": "Google", "META": "Meta"}
 
 # 사건 소싱 = 구글뉴스 RSS, 이번 정규장 개장 뒤 기사만(_fresh_news)
 NEWS_QUERIES = [("뉴욕증시", "ko"), ("뉴욕증시 마감", "ko"),
@@ -54,7 +59,7 @@ FRESH_DAYS = 2                                # 세션 시각을 못 구했을 �
 DEEP_K = 4                                    # 상위 헤드라인 N개는 본문까지 긁어 해석 깊이 확보
 WEB_FALLBACK = ("뉴욕증시 마감 특징주", "kr-ko")   # 뉴스가 빈약할 때만 보조
 
-BIG_MOVE = 1.5        # 첫 화면 '크게 움직인 종목' 기준(%). 넘는 게 3개 미만이면 큰 순서로 3개
+BIG_MOVE = 1.5        # 첫 화면 '크게 움직인 종목' 기준(% 이상). 그런 게 3개 미만이면 큰 순서로 3개
 MAX_MOVERS = 5
 TG_MAX = 3900         # notify.send 가 4000자에서 자른다 — 태그 중간에서 잘리지 않게 여기서 먼저 맞춘다
 # 모델 칸 글자 수 — 프롬프트에 주는 목표. 화면을 망가뜨릴 만큼(HARD) 넘치면 그 칸은 버린다.
@@ -87,15 +92,29 @@ def _arrow(p):
 
 
 # ── 세션: 지금 다루는 게 어느 날 정규장인가 ─────────────────────────
-def _session(meta):
-    """Yahoo meta → 가장 최근 정규장 {date, open_ts, closed}. 못 구하면 None.
-       마지막 체결 시각(regularMarketTime)의 현지 날짜가 그 세션의 날이다 — 주말 아침엔 금요일."""
-    t, off = meta.get("regularMarketTime"), meta.get("gmtoffset")
-    if not t or off is None:
+def _ny_offset(d):
+    """뉴욕의 UTC 오프셋(초) — 서머타임 = 3월 둘째 일요일 ~ 11월 첫 일요일.
+       윈도우 파이썬엔 tzdata 가 없어 zoneinfo 를 못 쓴다. Yahoo 의 gmtoffset 은 '지금' 오프셋이라
+       서머타임이 끝난 직후 주말엔 금요일 장 개장이 한 시간 밀려 계산된다(아스트라 검토)."""
+    def sunday(month, nth):
+        first = date(d.year, month, 1)
+        return first + timedelta(days=(6 - first.weekday()) % 7 + 7 * (nth - 1))
+    return -4 * 3600 if sunday(3, 2) <= d < sunday(11, 1) else -5 * 3600
+
+
+def _session(t):
+    """마지막 체결 시각 t → 그 정규장 {date, open_ts, close_ts, closed}. t 가 없으면 None.
+       마지막 체결의 뉴욕 날짜가 그 세션의 날이다 — 주말 아침엔 금요일."""
+    if not t:
         return None
-    d = datetime.fromtimestamp(t + off, tz=timezone.utc).date()
-    open_ts = int(datetime(d.year, d.month, d.day, 9, 30, tzinfo=timezone.utc).timestamp()) - off
-    return {"date": d, "open_ts": open_ts, "closed": time.time() >= open_ts + 390 * 60}
+    d = datetime.fromtimestamp(t + _ny_offset(datetime.fromtimestamp(t, tz=timezone.utc).date()),
+                               tz=timezone.utc).date()
+    base = int(datetime(d.year, d.month, d.day, tzinfo=timezone.utc).timestamp()) - _ny_offset(d)
+    open_ts, close_ts = base + 9 * 3600 + 30 * 60, base + 16 * 3600
+    now = time.time()
+    # 조기 폐장(13시)도 잡게 — 마지막 체결이 20분 넘게 멈춰 있으면 끝난 장으로 본다
+    return {"date": d, "open_ts": open_ts, "close_ts": close_ts,
+            "closed": now >= close_ts or now - t > 20 * 60}
 
 
 def _when(s):
@@ -103,27 +122,42 @@ def _when(s):
     return f"{d.month}/{d.day}({_WEEK[d.weekday()]}) " + ("마감" if s["closed"] else "장중")
 
 
-def _year_high(sym, price):
-    """→ (오늘 종가가 52주 최고 종가인가, meta). 1년 일봉 종가 중 오늘 봉을 뺀 최댓값과 비교."""
+def _year_high(sym, s):
+    """그 세션 종가가 52주(1년) 최고 종가인가. 오늘 봉은 가격이 아니라 날짜로 가려낸다 —
+       가격이 비슷하다고 빼면 어제 봉을 오늘로 착각해 신고가가 잘못 붙는다(아스트라 검토).
+       장중이면 아직 종가가 아니므로 판정하지 않는다."""
+    if not s or not s["closed"]:
+        return False
     j = prices._get_json(f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}"
                          "?interval=1d&range=1y")
     res = j["chart"]["result"][0]
     quote = ((res.get("indicators") or {}).get("quote") or [{}])[0]
-    closes = [c for c in (quote.get("close") or []) if c]
-    if closes and abs(closes[-1] - price) <= price * 0.0005:
-        closes = closes[:-1]                 # 마지막 봉 = 오늘 종가 → 빼고 비교
-    return bool(closes) and price >= max(closes), res.get("meta") or {}
+    off = _ny_offset(s["date"])          # 일봉 시각은 개장(09:30)이라 한 시간 차이로 날짜가 안 바뀐다
+    today, prior = None, []
+    for ts, c in zip(res.get("timestamp") or [], quote.get("close") or []):
+        if not c:
+            continue
+        d = datetime.fromtimestamp(ts + off, tz=timezone.utc).date()
+        if d == s["date"]:
+            today = c
+        elif d < s["date"]:
+            prior.append(c)
+    return bool(today and prior) and today >= max(prior)
 
 
-# ── 사건: 이번 정규장 개장 뒤 구글뉴스 기사만 ─────────────────────
-def _fresh_news(since=None):
-    """since(이번 세션 개장 시각) 뒤 기사만. 못 구했으면 최근 FRESH_DAYS 일."""
-    cutoff = since or (time.time() - FRESH_DAYS * 86400)
+# ── 사건: 이번 정규장 기사만 ─────────────────────────────────────
+def _fresh_news(session=None):
+    """개장 뒤 ~ 마감 12시간 뒤에 나온 기사만. 아래쪽만 막으면 주말 아침엔 주말 기사까지
+       금요일 장의 이유로 들어온다(아스트라 검토). 세션을 못 구했으면 최근 FRESH_DAYS 일."""
+    if session:
+        lo, hi = session["open_ts"], session["close_ts"] + 12 * 3600
+    else:
+        lo, hi = time.time() - FRESH_DAYS * 86400, time.time() + 3600
     items, seen = [], set()
     for kw, lang in NEWS_QUERIES:
         try:
             for it in news.fetch_keyword(kw, lang=lang, limit=12):
-                if it.get("_ts", 0) < cutoff:          # 지난 세션·오래된 기사 = 제외
+                if not lo <= it.get("_ts", 0) <= hi:    # 지난 세션·주말·오래된 기사 = 제외
                     continue
                 key = (it.get("title") or "")[:48]
                 if not key or key in seen:
@@ -141,6 +175,14 @@ def _clean_title(t):
     """헤드라인에서 ' - 매체명' 꼬리·따옴표·괄호 제거 → 검색어로."""
     t = (t or "").split(" - ")[0].split(" | ")[0]
     return re.sub(r'["“”\[\]]', "", t).strip()
+
+
+def _same_story(title, text):
+    """긁어 온 본문이 그 헤드라인의 기사인가 — 제목 낱말(한글 2자+·영문 4자+)이 본문에 절반 이상.
+       검색 결과 중 '제일 긴 본문'을 그냥 붙이면 다른 날·다른 사건 기사가 붙을 수 있다(아스트라 검토)."""
+    words = {w.lower() for w in re.findall(r"[가-힣]{2,}|[A-Za-z]{4,}", title or "")}
+    body = (text or "").lower()
+    return bool(words) and sum(w in body for w in words) >= max(2, len(words) // 2)
 
 
 def _deepen(news_items):
@@ -161,8 +203,10 @@ def _deepen(news_items):
             res = web.research(_clean_title(title), n_sources=3, kl=kl)
             best = ""
             for s in res.get("sources", []):
-                if s.get("readable") and len(s.get("text") or "") > len(best):
-                    best = s["text"]
+                text = s.get("text") or ""
+                if s.get("readable") and len(text) > len(best) \
+                        and _same_story(_clean_title(title), text):
+                    best = text
             if best:
                 it["body"] = best[:900]
                 picked += 1
@@ -174,25 +218,29 @@ def _deepen(news_items):
 # ── 수집: 그라운딩 숫자(Yahoo·CNN) + 이번 세션 사건(news, 폴백 web) ─────
 def gather():
     """→ {session, indices, movers, news, web, fg}. 숫자는 전부 실측, LLM 안 거침."""
-    indices, movers, session = [], [], None
+    indices, movers = [], []
     for sym, name in INDICES:
         r = prices._yahoo(sym, "지수")
-        if not (r.get("ok") and r.get("change_pct") is not None):
-            continue
-        row = {"sym": sym, "name": name, "price": r["price"], "pct": r["change_pct"],
-               "high": False}
-        try:
-            row["high"], meta = _year_high(sym, r["price"])
-            if session is None:
-                session = _session(meta)
-        except Exception:
-            pass
-        indices.append(row)
+        if r.get("ok") and r.get("change_pct") is not None:
+            indices.append({"sym": sym, "name": name, "pct": r["change_pct"],
+                            "time": r.get("time"), "high": False})
     for sym, name in MOVERS:
         r = prices._yahoo(sym, "주가")
         if r.get("ok") and r.get("change_pct") is not None:
-            movers.append({"sym": sym, "name": name, "pct": r["change_pct"]})
-    news_items = _deepen(_fresh_news(session["open_ts"] if session else None))
+            movers.append({"sym": sym, "name": name, "pct": r["change_pct"], "time": r.get("time")})
+    # 세션 = S&P500(없으면 처음 잡힌 시세)의 마지막 체결 날. 다른 날 값(멈춘 시세)은 한 통에 안 섞는다
+    first = next((x for x in indices + movers if x.get("time")), None)
+    session = _session(first["time"]) if first else None
+    if session:
+        same = lambda x: not x.get("time") or _session(x["time"])["date"] == session["date"]
+        indices = [x for x in indices if same(x)]
+        movers = [x for x in movers if same(x)]
+        for r in indices:
+            try:
+                r["high"] = _year_high(r["sym"], session)
+            except Exception:
+                pass
+    news_items = _deepen(_fresh_news(session))
     web_sources = []
     if len(news_items) < 3:                  # 이번 세션 뉴스가 빈약하면 웹 보조(날짜 미확인)
         try:
@@ -207,7 +255,7 @@ def gather():
 
 
 def _pick_movers(movers):
-    """첫 화면에 올릴 종목 — BIG_MOVE% 넘게 움직인 것(최대 MAX_MOVERS), 모자라면 큰 순서로 3개."""
+    """첫 화면에 올릴 종목 — BIG_MOVE% 이상 움직인 것(최대 MAX_MOVERS), 모자라면 큰 순서로 3개."""
     by = sorted(movers, key=lambda m: -abs(m["pct"]))
     big = [m for m in by if abs(m["pct"]) >= BIG_MOVE][:MAX_MOVERS]
     return big if len(big) >= 3 else by[:3]
@@ -219,7 +267,7 @@ def _evidence(data, today):
           f"{_when(s) if s else '(날짜 미확인)'}. 이 세션 얘기만 써라]",
           "",
           "[지수 — Yahoo 실측]",
-          " · ".join(f"{r['name']} {r['pct']:+.2f}%" + (" (52주 최고 종가)" if r["high"] else "")
+          " · ".join(f"{r['name']} {r['pct']:+.2f}%" + (" (종가 기준 52주 최고)" if r["high"] else "")
                      for r in data["indices"]) or "(지수 수집 실패)",
           "",
           "[종목 — Yahoo 실측]",
@@ -265,8 +313,8 @@ SYNTH_SYS = (
     '{"summary": "...", "points": ["...", "..."], "movers": {"종목이름": "..."}, "mood": "..."}\n'
     "- summary: 오늘 장 성격 한 줄, 34자 이내. 예) 실적 기대에 기술주 주도 상승, 반도체는 엇갈림\n"
     "- points: 오늘 장을 움직인 이유·흐름 최대 3개, 각 50자 이내, 한 줄에 한 가지. 이번 세션 기사에 있는 것만.\n"
-    "- movers: [크게 움직인 종목] 중 이번 세션 기사에 움직인 이유가 나온 종목만 "
-    '{"종목이름": "이유 45자 이내"}. 이유가 기사에 없으면 넣지 마라. 하나도 없으면 {}.\n'
+    "- movers: [크게 움직인 종목] 중 이번 세션 기사에 그 종목 이름이 직접 나오고 움직인 이유가 적힌 것만 "
+    '{"종목이름": "이유 45자 이내"}. \'업종 흐름에 동반\' 같은 추측은 넣지 마라. 하나도 없으면 {}.\n'
     "- mood: 공포·탐욕 세부지표가 '뜻하는' 분위기 한 줄, 50자 이내. 어느 지표가 극단인지 나열은 코드가 "
     "따로 붙이니 반복하지 말고 해석만(예: '겉은 중립, 속은 소수 대형주 쏠림 — 상승 폭 좁음 경계'). "
     "극단 공포=과매도·반등 기대, 극단 탐욕=과열 경계 맥락. 단정하지 말고 분위기로.\n"
@@ -373,7 +421,8 @@ def _local_brief(model, evidence):
         audited = _parse(r2["message"].get("content", ""))
     except Exception:
         audited = None       # 감사 실패해도 1차 초안은 살림
-    return audited or _parse(draft), None
+    # ★'or' 로 고르면 감사가 다 지운 {} 가 거짓이라 지운 초안이 되살아난다(아스트라 검토)
+    return (audited if audited is not None else _parse(draft)), None
 
 
 # ── 모델 글 거르기: 근거에 없는 숫자 · 화면을 망가뜨릴 길이 ────────────
@@ -396,9 +445,11 @@ def _grounded(s, ev_flat):
 
 
 def _tidy(s, hard):
-    """모델 글 한 칸 → 깨끗한 한 줄, 또는 ''(버림). 태그·마크다운 기호를 지우고, hard 를 넘으면
-       버린다 — 중간을 자르면 말이 끊긴 채 나가니 차라리 비운다."""
-    s = re.sub(r"<[^>]*>", "", str(s or ""))
+    """모델 글 한 칸 → 깨끗한 한 줄, 또는 ''(버림). 글자가 아니면(객체·숫자·참거짓) 버리고,
+       태그·마크다운 기호를 지우고, hard 를 넘으면 버린다 — 중간을 자르면 말이 끊긴 채 나간다."""
+    if not isinstance(s, str):
+        return ""
+    s = re.sub(r"<[^>]*>", "", s)
     s = re.sub(r"[*`#]+", "", s)
     s = re.sub(r"\s+", " ", s).strip(" -·•")
     return s if len(s) <= hard else ""
@@ -410,6 +461,14 @@ def _match_mover(key, movers):
         if m["name"].replace(" ", "").lower() in k or m["sym"].lower() == k:
             return m
     return None
+
+
+def _mentioned(m, news_text):
+    """이번 장 기사(제목·요약·본문)에 그 종목이 나오나 — 한글 이름·티커·영문 이름 중 하나라도.
+       안 나오는데 붙은 이유는 '반도체 강세에 동반 상승으로 보임' 같은 추측이라 버린다."""
+    names = [m["name"], m["sym"], MOVER_EN.get(m["sym"], "")]
+    return any(n and re.search(r"(?<![A-Za-z])" + re.escape(n) + r"(?![A-Za-z])", news_text, re.I)
+               for n in names)
 
 
 def _clean(d, data, evidence):
@@ -428,30 +487,39 @@ def _clean(d, data, evidence):
             out["points"].append(p)
     out["points"] = out["points"][:3]
     mv = d.get("movers")
+    news_text = "\n".join(f"{it.get('title', '')} {it.get('summary', '')} {it.get('body', '')}"
+                          for it in data["news"])
     for k, v in (mv.items() if isinstance(mv, dict) else []):
         m = _match_mover(k, data["movers"])
         v = _tidy(v, HARD["mover"])
-        if m and v and _grounded(v, flat):
+        if m and v and _grounded(v, flat) and _mentioned(m, news_text):
             out["movers"][m["sym"]] = v
     mood = _tidy(d.get("mood"), HARD["mood"])
     if mood and _grounded(mood, flat):
         out["mood"] = mood
+    if not data["news"]:
+        # 이번 장 기사가 0건이면 사건·인과 칸은 코드가 비운다 — 프롬프트로 '비워라' 해도
+        # 숫자 없는 지어낸 이유는 거르기에 안 걸린다(아스트라 검토). 심리(mood)는 CNN 숫자가 근거라 둔다.
+        out["summary"], out["points"], out["movers"] = "", [], {}
     return out
 
 
 def _code_summary(data):
     """모델 한 줄이 없을 때 쓰는 기본 한 줄 — 숫자 방향만으로 만든다(지어낼 게 없다)."""
-    main = [r for r in data["indices"] if r["sym"] != "^SOX"]
-    if not main:
+    rows = [r for r in data["indices"] if r["sym"] != "^SOX"] or data["indices"]
+    if not rows:
         return "지수 수집 실패 — 종목만 정리"
-    if all(r["pct"] > 0 for r in main):
-        head = "주요 지수 모두 상승"
-    elif all(r["pct"] < 0 for r in main):
-        head = "주요 지수 모두 하락"
+    # 3대 지수가 다 있을 때만 '주요 지수' — 일부만 잡혔는데 '모두 상승'이라 하면 틀린 말이 된다
+    who = "주요 지수" if len(rows) == 3 else "·".join(r["name"] for r in rows)
+    both = "모두 " if len(rows) > 1 else ""
+    if all(r["pct"] > 0 for r in rows):
+        head = f"{who} {both}상승"
+    elif all(r["pct"] < 0 for r in rows):
+        head = f"{who} {both}하락"
     else:
-        head = "주요 지수 엇갈림"
+        head = f"{who} 엇갈림"
     highs = [r["name"] for r in data["indices"] if r["high"]]
-    return head + (f" · {'·'.join(highs)} 52주 신고가" if highs else "")
+    return head + (f" · {'·'.join(highs)} 52주 최고 종가" if highs else "")
 
 
 # ── 조립: 텔레그램 HTML 한 통 ──────────────────────────────────────
@@ -508,7 +576,7 @@ def render(data, txt, brain, note=""):
             _esc(txt.get("summary") or _code_summary(data)), ""]
     for r in data["indices"]:
         head.append(f"{_esc(r['name'])}  <b>{_arrow(r['pct'])}</b>"
-                    + ("  <i>52주 신고가</i>" if r["high"] else ""))
+                    + ("  <i>52주 최고 종가</i>" if r["high"] else ""))
     picks = _pick_movers(data["movers"])
     if picks:
         head += ["", "<b>크게 움직인 종목</b>"]

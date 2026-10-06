@@ -57,6 +57,7 @@ def _yahoo(symbol, kind):
     pct = (chg / prev * 100) if (chg is not None and prev) else None
     return {"ok": True, "kind": kind, "symbol": symbol,
             "price": price, "currency": meta.get("currency"),
+            "time": meta.get("regularMarketTime"),     # 마지막 체결 시각 — 브리핑이 같은 장인지 맞춰 봄
             "prev_close": prev,
             "change": round(chg, 4) if chg is not None else None,
             "change_pct": round(pct, 2) if pct is not None else None,
@@ -237,8 +238,13 @@ def stock_fear_greed():
                 comps.append({"name": lab, "score": round(v["score"], 1),
                               "rating": v.get("rating")})
         # 전날·1주 전 값 — 증시 브리핑이 "47 중립 · 전날 43" 처럼 흐름을 같이 보여주려고(2026-10-07)
-        prev = {k: round(fg[k]) for k in ("previous_close", "previous_1_week")
-                if fg.get(k) is not None}
+        #  덤으로 붙이는 값이라 이상해도 오늘 값까지 실패시키지 않는다.
+        prev = {}
+        for k in ("previous_close", "previous_1_week"):
+            try:
+                prev[k] = round(float(fg[k]))
+            except Exception:
+                pass
         return {"ok": True, "kind": "공포탐욕", "market": "미국증시",
                 "value": round(fg["score"]), "class": fg.get("rating"),
                 "prev_close": prev.get("previous_close"), "prev_week": prev.get("previous_1_week"),
