@@ -23,6 +23,7 @@ A.B.B.Y.S 프로젝트의 두뇌 레이어 (VOID의 형제).
    다른 사건' 예시를 넣고 `C:\Users\USER\AppData\Local\Temp\comet_fix_1007\replay_meaning.py` 로 다시 잴 것(판정 123번 — 아스트라 한도 주의).
 3. **호윤이 쓰면서 볼 것(10/07 붙인 것)**
    - 증시 브리핑 새 모양 — 아침 실발송(클로드·아스트라 먼저). 모양 규칙은 메모리 `feedback_telegram_phone_format`.
+   - **텔레그램으로 질문** — 데몬을 다시 켠 뒤 봇에게 아무 질문이나 보내 답이 오는지(10/07 c577132, 가짜 텔레그램으로만 시험).
    - 「소식 듣기」 — **지금 꺼짐**(호윤이 10/07 07:18 끔). 켜면 배너·목소리·대화창 글이 같은 순간에 나오는지.
    - Esc — 말하는 동안 어느 창에서든 멈춤(10/07 07:18 실제 확인). 대화창 답(🔊)·Alt 두 번 대답에서도.
    - 아야카 자리 내기 — 큰 모델이 올라와 있으면 그 줄만 Edge 로 나간다(굳지 않게). 로그 `[아야카] GPU 여유 …`.
@@ -69,6 +70,7 @@ A.B.B.Y.S 프로젝트의 두뇌 레이어 (VOID의 형제).
 - **덕킹** — 코멧이 말할 때·내가 말할 때 다른 앱 볼륨 20%(pycaw, 맨 앞 창·디스코드 예외). 끄려면 `voice.DUCK=False`.
   죽은 채 줄어 있으면 데몬 시작 때 `duck_state.json` 으로 되돌림.
 - **회의 = 클로드 + 아스트라**(`debate.py`, 구독 CLI). `회의 <주제>` 또는 의견 질문 → 각자 입장 → 반박 → 결론(배너+음성). 전문 `회의 결과`.
+- **텔레그램으로 묻기** — `자율모드 telegram`(기본 켜짐). 봇에게 글을 보내면 코멧 대화에 넣어 같은 방으로 답한다(호윤 chat_id 만, 꺼져 있을 때 온 10분 넘은 말은 건너뜀, 생각하는 동안 '입력 중…', 답은 글로만·긴 답은 여러 통). 데몬에선 폰 웹·대화창과 같은 줄에 선다. 한 PC 에 하나만(뮤텍스 `Local\COMET_TELEGRAM`).
 - **증시 브리핑(아침 텔레그램)** — `자율모드 brief`. 매일 `hour`(7시) 이후 첫 점검에서, 이미 보낸 장이면 건너뜀(`last_session` — 주말·휴장).
   숫자 칸은 코드가 고정(지수 4개·크게 움직인 종목·공포탐욕), 해석은 클로드→아스트라→로컬이 JSON 으로, 자세한 건 접힌 인용.
   시험: `python market_brief.py --cloud`(1회 생성·출력, 전송 안 함).
@@ -124,7 +126,7 @@ A.B.B.Y.S 프로젝트의 두뇌 레이어 (VOID의 형제).
 - `marketlog.py` — **정세 로그(SQLite market_log.db) + 가짜뉴스 필터.** web/analyst가 긁은 출처를 날짜·토픽·등급·링크로 적재(중복방지=내용 해시 UNIQUE). **신뢰 필터 assess(): 중대사안(암살·전쟁·디폴트 등)인데 듣보/단독/특보+과장어로 '말로만 확신' 주는 약한출처(등급3)는 rejected(가짜 의심)로 안 들임, URL 없으면 거부, 일반 등급3은 unconfirmed(참고), 등급1/2는 confirmed.** 도구 market_log(토픽 흐름 타임라인+링크 조회). analyst가 분석 때마다 log_research()로 자동 적재. (날짜로 '정세 흐름' 추적 + 나중 검토용 링크 보존)
 - `finance_news.py` — **금융 뉴스 소스(Only Money 엔진과 동일 피드, 키0·의존성0).** 2026-06-28 신설. 종목별 Yahoo Finance RSS(`headline?s=티커`) + 거시(CNBC·MarketWatch·Investing) RSS를 받아 **analyst의 1차 근거**로 쓴다. **왜:** analyst가 web.py(덕덕고)로 "엔비디아 사도될까"를 검색하면 티스토리·블로그(등급3)만 긁혀 컨센서스가 부실(TQQQ는 출처 0개로 빈손)했음. Only Money 대시보드(index.html)가 쓰는 진짜 금융매체 RSS를 그대로 가져옴 → 이제 출처가 **전부 등급2 보도언론(fool/yahoo/247wallst)·날짜부착**. 반환 dict는 web.research source 와 동형이라 analyst._src_block/_sources_footer/_evidence 무수정 소비. 도메인당 3건까지 허용(단일 양질피드라 블로그식 1도메인=1건 안 함), FRESH_DAYS=30 신선필터. 검증: NVDA 6건(Vera Rubin 발표 등)·TQQQ 4건(구조적 감쇠비용)·블로그 0건, 속도 3분→1분53초. ⚠️Yahoo 종목피드는 가끔 섹터 일반기사(SpaceX·Vanguard 등)도 섞임(종목 100% 특정은 아님). **이미지 역검색(imagesearch.py)은 web.py를 '이게 뭔 사진인지' 식별 뒤 일반검색으로만 쓰므로 그대로 둠 — 금융 소스만 여기로 분리.**
 - `analyst.py` — **종목·테마 분석(2패스 이중판단).** 수집은 파이썬(Yahoo 1년 일봉 실계산·펀더멘털·금융 RSS·군중심리·보유) → ①컨센서스+2차파급 = **클로드(웹검색)** → ②역발상·사실 감사 = **아스트라(웹검색)**(1차와 다른 머리) → 둘 다 막히면 로컬 Q3 26b. 가격은 파이썬이 직접 박는다. 정세 로그 자동 적재. 엔비디아 실측 105초(10/07). 도구: analyze_stock.
-- `news.py` / `notify.py` — 뉴스 감시(구글뉴스 RSS) + **텔레그램** 푸시(`send` — HTML 거절되면 태그 벗겨 한 번 더). chat_id 는 `telegram_config.json`.
+- `news.py` / `notify.py` — 뉴스 감시(구글뉴스 RSS) + **텔레그램** 보내기(`send` — HTML 거절되면 태그 벗겨 한 번 더, `send_long`·`md_to_tg`) · 받기(`updates` 길게 기다리기·`typing`). chat_id 는 `telegram_config.json`.
 - `market_brief.py` — **아침 미국 증시 브리핑(텔레그램, 폰 기준).** 숫자 칸(지수 4개·크게 움직인 종목·공포탐욕)은 코드가 고정 — 📈/📉, 숫자는 이름 앞 `<code>` 고정폭(열 맞춤), 업종 꼬리표, 한 줄 한글 20자. 해석은 클로드→아스트라→로컬 Q3 이 JSON 칸만(근거에 없는 숫자·기사에 안 나온 종목 이유는 버림), 자세한 건 접힌 인용. 기사는 이번 장 개장~마감+12시간(마지막 체결 시각으로 세션 판정). `latest_session()`. 시험 `python market_brief.py --cloud`(전송 안 함).
 - `autonomy.py` — **자율/상주 모드 레이어(comet 비대화 격리).** 모드=스레드+예외격리+가용성게이트. `ProactiveMode`(news.collect→판단게이트→notify.send, 모델0) · `WakeMode`(openwakeword 상시대기→voice STT→respond, 엔진없으면 available()=False) · `IssuesMode`(이슈 알림) · `TalkMode`(Alt 두 번 → ask_box 창, 저수준 키보드 훅). `Autonomy` 컨트롤러=enable/disable/status/restore + '자율모드 …' 명령 파서. 설정 autonomy_config.json. comet.py 가 `self.autonomy`로 생성·복원·토글만.
 - `cloud.py` — **클라우드 두뇌(멀티 프로바이더): 클로드(`/v1/messages`)·GPT·OpenAI호환.** 메인 대화 최종 답변만 클라우드로(로컬 기본·키 없으면 폴백). cost_guard 검문. `chat()`이 ollama와 동형 반환. 설정 cloud_config.json(모델), 키=환경변수 또는 cloud_keys.json(런타임 `키 클로드 …`로 재시작 없이 교체).
