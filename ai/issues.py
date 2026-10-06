@@ -954,6 +954,103 @@ def _filter_new(found, seen):
     return fresh
 
 
+# ═══════════════════════════════════════════════════════════════
+#  뜻으로 같은 사건 거르기 — 낱말 판정(_same_event)이 못 잇는 영어↔한국어·말 바꾼 기사 (2026-10-07)
+#   알림 기록 재생에서 남은 중복 27건 대부분이 'OpenAI breached by researchers…' ↔ '앤트로픽 클로드로
+#   오픈AI 뚫었다' 처럼 언어·표현만 다른 같은 사건이었다(호윤: "중복으로 가져오는 것도 많더라").
+#   ★임베딩(embeddinggemma) 유사도만으로는 못 가른다 — 정답지 쌍을 재 보니 같은 사건 0.51~0.85,
+#     다른 사건 최고 0.85('코스피 급등…반도체 강세' ↔ '뉴욕증시…반도체 강세', 같은 날 다른 시장).
+#     어느 문턱이든 다른 소식을 같이 묻는다(0.80 에서 10쌍 잡고 5쌍 잘못 묶음).
+#   → 임베딩은 '같은 사건일 수도 있는 짝' 고르기에만 쓰고(EMB_CAND — 같은 사건 쌍 최저 0.51 밑),
+#     판정은 아스트라 → 클로드(구독 CLI)에게 묻는다(호윤: claude·gpt 로 풀 수 있는 건 그쪽 cli 로).
+#     알릴 게 생긴 판에서, 가까운 짝이 있을 때만 묻는다. 둘 다 실패하면 거르지 않는다 —
+#     중복 한 번 울리는 게 다른 소식을 묻는 것보다 낫다.
+# ═══════════════════════════════════════════════════════════════
+EMB_MODEL = "embeddinggemma:300m"
+EMB_PREFIX = "task: sentence similarity | query: "
+EMB_CAND = 0.45            # 이 이상 가까운 '알린 소식'이 있을 때만 판정을 묻는다
+_EMB = {}                  # 제목 → 벡터(프로세스 안 캐시 — 본 것 수백 개를 매 판 다시 안 돌리게)
+
+
+def _embed(titles):
+    need = [t for t in dict.fromkeys(titles) if t not in _EMB]
+    if need:
+        import ollama
+        vecs = ollama.Client(timeout=30).embed(model=EMB_MODEL, keep_alive="10m",
+                                               input=[EMB_PREFIX + t for t in need])["embeddings"]
+        _EMB.update(zip(need, vecs))
+        while len(_EMB) > 3000:                           # 오래된 것부터 버린다(넣은 순서)
+            _EMB.pop(next(iter(_EMB)))
+    return [_EMB[t] for t in titles]
+
+
+def _cos(a, b):
+    na = sum(x * x for x in a) ** 0.5
+    nb = sum(y * y for y in b) ** 0.5
+    return sum(x * y for x, y in zip(a, b)) / (na * nb) if na and nb else 0.0
+
+
+SAME_PROMPT = (
+    "[새 소식] 각 줄이 [이미 알린 소식] 중 하나와 '같은 사건'인지 판정해라.\n"
+    "같은 사건 = 같은 일(같은 발표·사고·수치·결정)을 다룬 기사. 언어(영어·한국어)·표현·매체가 달라도 같은 사건이다.\n"
+    "다른 사건 = 같은 회사·같은 주제라도 다른 발표·다른 날의 일, 다른 나라 시장"
+    "(예: 코스피 마감 ≠ 뉴욕증시 마감, 'GPT-6 Sol 출시' ≠ 'GPT-6 Astra 성능 분석'). 애매하면 다른 사건.\n"
+    '파일은 건드리지 말고 JSON 하나만: {"same": ["N1", ...]}  (같은 사건인 새 소식 번호만, 없으면 [])\n')
+
+
+def _ask_same(told_titles, cand_titles, log=print):
+    """→ 같은 사건으로 판정된 후보 번호(0부터) 집합. 두뇌가 다 실패하면 None(= 거르지 않음)."""
+    import debate
+    prompt = (SAME_PROMPT + "\n[이미 알린 소식]\n"
+              + "\n".join(f"T{i + 1}) {t}" for i, t in enumerate(told_titles))
+              + "\n\n[새 소식]\n" + "\n".join(f"N{i + 1}) {t}" for i, t in enumerate(cand_titles)))
+    for who, ask in (("아스트라", lambda p: debate.ask_astra(p, timeout=90)),
+                     ("클로드", lambda p: debate.ask_claude(p, timeout=90))):
+        try:
+            out = ask(prompt)
+            m = re.search(r"\{.*\}", out or "", re.S)
+            same = json.loads(m.group(0)).get("same") if m else None
+            if isinstance(same, list):
+                return {int(s[1:]) - 1 for s in map(str, same)
+                        if re.fullmatch(r"N\d+", s) and 0 < int(s[1:]) <= len(cand_titles)}
+            log(f"[이슈] 같은 사건 판정 — {who} 답 형식이 이상함")
+        except Exception as e:
+            log(f"[이슈] 같은 사건 판정 — {who} 실패: {str(e)[:100]}")
+    return None
+
+
+def _meaning_dupes(hit, seen, log=print):
+    """알릴 후보(hit) 중 최근 48시간 안에 '알린' 소식과 뜻으로 같은 사건 → 그 후보들의 id 집합.
+       시장 등락(mkt:)은 열쇠로 이미 가린다 — 여기선 안 본다."""
+    cands = [x for x in hit if not _is_mkt(x)]
+    now = time.time()
+    told = [s for s in seen if s.get("told") and not _is_mkt(s) and s.get("title")
+            and now - s.get("t", 0) < SEEN_KEEP_H * 3600
+            and cands and s.get("cat") == cands[0]["cat"]]
+    if not cands or not told:
+        return set()
+    try:
+        vc = _embed([_clean_title(x["title"]) for x in cands])
+        vt = _embed([_clean_title(s["title"]) for s in told])
+        near = {i: [j for j, b in enumerate(vt) if _cos(a, b) >= EMB_CAND] for i, a in enumerate(vc)}
+        near = {i: js for i, js in near.items() if js}
+    except Exception as e:                       # ollama 가 꺼져 있으면 — 최근 알린 것 전부와 비교해 묻는다
+        log(f"[이슈] 뜻 비교 임베딩 실패({str(e)[:80]}) — 최근 알린 것 전부로 판정")
+        near = {i: list(range(len(told))) for i in range(len(cands))}
+    if not near:
+        return set()
+    js = sorted({j for v in near.values() for j in v}, key=lambda j: -told[j].get("t", 0))[:15]
+    told_titles = [_clean_title(told[j]["title"]) + (f"  (한국어: {told[j]['ko']})" if told[j].get("ko")
+                                                     else "") for j in js]
+    order = sorted(near)
+    same = _ask_same(told_titles, [_clean_title(cands[i]["title"]) for i in order], log)
+    if not same:
+        return set()
+    dup = [cands[order[k]] for k in same]
+    log(f"[이슈] 뜻으로 같은 사건 {len(dup)}건 거름 — " + " / ".join(x["title"][:40] for x in dup))
+    return {id(x) for x in dup}
+
+
 def _mark_seen(items, seen, told=()):
     """told = 실제로 알릴 항목들(id). 그건 다시 안 알린다(위 머리말)."""
     now = time.time()
@@ -1527,7 +1624,10 @@ def _check(modes, *, gpu_busy_fn=None, quiet_hours=None, log=print, dry=False, b
             result[cat] = 0
             continue
         hit = [x for x in new if x["level"] >= need][:5]
+        # 뜻으로 같은 사건(영어↔한국어·말 바꾼 기사)인지 — '본 것' 등록 전에 봐야 자기 자신과 비교하지 않는다
+        dup = _meaning_dupes(hit, seen, log) if hit else set()
         _mark_seen(new, seen, told=hit)    # 기준 미달도 '봤음' — 나중에 강도 오르면 그때 알림
+        hit = [x for x in hit if id(x) not in dup]   # 거른 것도 '알린 것'으로 남긴다 — 다음 판에 또 묻지 않게
         #  ★알리기 전에 저장한다. 예전엔 두 분야를 다 돈 뒤 맨 끝에 한 번만 저장해서, AI 를 알리고 경제를 도는 사이
         #    데몬을 껐다 켜면 AI 쪽 '본 것'이 통째로 날아가 다음 판에 같은 5건을 또 알렸다(10/01 15:26 → 15:31).
         _save(SEEN_FILE, seen)
