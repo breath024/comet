@@ -325,6 +325,11 @@ _EN_WORDS = {           # 소문자 키 — 약어처럼 읽으면 안 되는 �
 }
 _hangul_lock = threading.Lock()
 _hangul_cache = None
+#  ★모델이 한 번 실패하면 한동안 안 묻는다 — 2026-10-01 로그에 '[한글 소리 실패] timed out' 이 두 번.
+#    12b 가 대화 답을 만드는 동안엔 이 요청이 뒤에 줄 서서 20초를 꽉 채우고 실패한다 = 그 20초 동안 말이 안 나온다.
+#    매 알림마다 20초씩 붙잡느니, 그동안은 모르는 영어를 그대로 읽게 둔다(사전·약어·캐시는 그대로 먹는다).
+HANGUL_PAUSE = 600
+_hangul_fail = 0.0
 
 
 def _load_hangul():
@@ -339,7 +344,8 @@ def _load_hangul():
 
 
 def _ask_hangul(words):
-    """영어 단어들 → {단어: 한글 소리}. 실패하면 {}."""
+    """영어 단어들 → {단어: 한글 소리}. 실패하면 {} — 그리고 HANGUL_PAUSE 동안 안 묻는다."""
+    global _hangul_fail
     try:
         import ollama
         r = ollama.Client(timeout=20).chat(
@@ -351,7 +357,8 @@ def _ask_hangul(words):
                        'JSON 만: {"단어": "한글"}\n\n' + "\n".join(words)}])
         got = json.loads(r["message"].get("content") or "{}")
     except Exception as e:
-        print(f"  [한글 소리 실패] {str(e)[:60]}")
+        _hangul_fail = time.time()
+        print(f"  [한글 소리 실패] {str(e)[:60]} — {HANGUL_PAUSE // 60}분간 모델 안 부름")
         return {}
     out = {}
     for k, v in (got.items() if isinstance(got, dict) else []):
@@ -376,7 +383,7 @@ def speak_hangul(text: str) -> str:
                           if w.lower() not in _EN_WORDS and w.lower() not in cache
                           and not (w.isupper() and len(w) <= 4)
                           and not re.fullmatch(r"[A-Z]{2,4}s", w)})
-        if unknown:
+        if unknown and time.time() - _hangul_fail > HANGUL_PAUSE:
             new = _ask_hangul(unknown[:40])
             if new:
                 cache.update(new)
