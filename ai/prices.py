@@ -236,8 +236,12 @@ def stock_fear_greed():
             if isinstance(v, dict) and v.get("score") is not None:
                 comps.append({"name": lab, "score": round(v["score"], 1),
                               "rating": v.get("rating")})
+        # 전날·1주 전 값 — 증시 브리핑이 "47 중립 · 전날 43" 처럼 흐름을 같이 보여주려고(2026-10-07)
+        prev = {k: round(fg[k]) for k in ("previous_close", "previous_1_week")
+                if fg.get(k) is not None}
         return {"ok": True, "kind": "공포탐욕", "market": "미국증시",
                 "value": round(fg["score"]), "class": fg.get("rating"),
+                "prev_close": prev.get("previous_close"), "prev_week": prev.get("previous_1_week"),
                 "components": comps, "source": "CNN Fear & Greed"}
     except Exception as e:
         return {"ok": False, "msg": f"CNN 공포탐욕 조회 실패: {e}"}
