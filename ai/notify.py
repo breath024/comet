@@ -87,7 +87,10 @@ def send(text: str, html_mode=True) -> dict:
         # 태그가 깨진 글(모델이 쓴 '<', 4000자에서 잘린 태그)은 400 "can't parse entities" 로
         # 통째로 거절된다 — 그대로 두면 같은 글로 재시도만 돈다. 태그를 벗겨 한 번 더 보낸다.
         if html_mode and "parse entities" in body:
-            return send(_plain(text), html_mode=False)
+            r = send(_plain(text), html_mode=False)
+            if r.get("ok"):
+                r["msg"] = "전송됨(HTML 거절 → 맨글로)"      # 로그에서 모양이 깨졌다는 걸 알 수 있게
+            return r
         return {"ok": False, "msg": f"전송 실패: {e} {body[:200]}"}
     except Exception as e:
         return {"ok": False, "msg": f"전송 실패: {e}"}
