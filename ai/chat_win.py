@@ -13,6 +13,8 @@
 #     아야카 목소리로 읽는다. 글자가 먼저 오고 읽기는 뒤에서 돈다.
 #   · 머리말 「소식 듣기」 = AI·경제 소식 알림 켜기/끄기(데몬 POST /news, '알림 켜/끔' 과 같은 스위치).
 #     몇 초마다 데몬에 물어 상태를 맞춘다 — 콘솔에서 '알림 끔' 해도 버튼이 따라 바뀐다.
+#   · 소식이 알려지면 같은 순간 여기에도 글로 남는다(왼쪽 색 띠 말풍선 — 띠 색 = 배너와 같은 강도 색).
+#     창을 연 뒤에 온 것만. 대화 기록에는 안 들어간다(이유는 issues.py 의 FEED 머리말).
 # ═══════════════════════════════════════════════════════════════
 import json
 import os
@@ -41,6 +43,7 @@ NEWS_POLL_MS = 3000   # 소식 듣기 상태를 데몬에 묻는 간격
 
 BG, CARD, LINE = "#0e0f12", "#1c1e24", "#23252b"
 FG, SUB, ME = "#e8e8ea", "#6b6e76", "#2a6df4"
+NEWS_ACCENT = {3: "#ff453a", 2: "#ff9f0a", 1: "#8e8e93"}   # 굵직 / 볼만함 / 잔잔 — toast.py 배너와 같은 색
 
 
 def _token():
@@ -184,6 +187,7 @@ class ChatWindow(QWidget):
         self.spk.clicked.connect(self._toggle_speak)
         self.news_on = None                    # 소식 듣기 — 데몬에서 받아 온 값. 모르면 None
         self._news_busy = False                # 묻는 중(겹쳐 묻지 않게)
+        self._feed_last = None                 # 마지막으로 그린 소식 id — None = 아직 안 물어봄(지난 건 안 그린다)
         self.newsb = QPushButton()
         self.newsb.setFixedHeight(26)
         self.newsb.setCursor(Qt.PointingHandCursor)
@@ -255,7 +259,7 @@ class ChatWindow(QWidget):
         self.input.setFocus()
 
     # ── 화면 ──
-    def _bubble(self, text, who):
+    def _bubble(self, text, who, level=2):
         lab = Bubble(text)
         lab.setMaximumWidth(int(self.width() * BUBBLE_MAX))
         if who == "me":
@@ -264,6 +268,11 @@ class ChatWindow(QWidget):
         elif who == "ai":
             lab.setStyleSheet(f"background:{CARD}; color:{FG}; padding:9px 12px;"
                               "border-radius:14px; border-bottom-left-radius:4px;")
+        elif who == "news":                      # 소식 — 코멧 쪽, 왼쪽 색 띠로 대답과 구분
+            lab.setTextFormat(Qt.PlainText)      # 기사 제목의 < > 가 태그로 먹히지 않게
+            lab.setStyleSheet(f"background:{CARD}; color:{FG}; padding:9px 12px;"
+                              "border-radius:14px; border-bottom-left-radius:4px;"
+                              f"border-left:3px solid {NEWS_ACCENT.get(level, NEWS_ACCENT[2])};")
         else:                                    # sys
             lab.setStyleSheet(f"color:{SUB}; font-size:12px;")
 
@@ -278,7 +287,7 @@ class ChatWindow(QWidget):
         if who == "me":
             rl.addStretch(1)
             rl.addWidget(lab)
-        elif who == "ai":
+        elif who in ("ai", "news"):
             rl.addWidget(lab)
             rl.addStretch(1)
         else:
@@ -348,6 +357,9 @@ class ChatWindow(QWidget):
                                  "font-size:12px;} QPushButton:disabled{color:#8b8f99;}")
 
     def _news_call(self, payload, toggled):
+        if self._feed_last is not None:
+            payload = dict(payload, after=self._feed_last)    # 그 뒤로 알린 소식도 같이 받는다
+
         def run():
             ok, res = _post("/news", payload, timeout=30)
             self.bridge.news.emit(ok, res, toggled)
@@ -369,6 +381,11 @@ class ChatWindow(QWidget):
         self.newsb.setEnabled(True)
         if ok and isinstance(res, dict) and "on" in res:
             self.news_on = bool(res["on"])
+            for e in res.get("feed") or []:                    # 새로 알린 소식 → 말풍선
+                self._bubble(e.get("text", ""), "news", e.get("level", 2))
+                self._feed_last = max(self._feed_last or 0, int(e.get("id", 0)))
+            if self._feed_last is None and isinstance(res.get("last"), int):
+                self._feed_last = res["last"]                  # 처음 물었을 땐 여기서부터
             if toggled:
                 self._bubble("소식 듣기 켬 — 지금 떠 있는 건 건너뛰고 새 소식부터" if self.news_on
                              else "소식 듣기 끔 — 다시 켤 때까지 소식 알림 안 함", "sys")

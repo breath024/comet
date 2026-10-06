@@ -1120,6 +1120,47 @@ def _say(text, on_show=None):
         show()
 
 
+# ═══════════════════════════════════════════════════════════════
+#  대화창에도 — 알린 소식을 데몬 메모리에 쌓아 두면 대화창(chat_win)이 몇 초마다 가져가 말풍선으로 그린다
+#   (데몬 POST /news 의 feed). 데몬이 켜져 있는 동안의 것만 — 지난 건 '알림 기록' 으로 본다.
+#   ★대화 기록(comet_history.json)엔 안 넣는다(2026-10-07):
+#     · 2분마다 오는 알림이 모델에 넘기는 최근 40개를 밀어내 정작 대화를 잊는다
+#     · 말걸기 Esc 취소(respond_cancelable)는 '그 턴 시작 뒤' 를 통째로 지운다 — 생각하는 사이 들어온 알림이
+#       같이 지워지거나 사용자/코멧 번갈이 사이에 끼어 모델이 헷갈린다
+#     · "그거 내용 봐봐" 는 issues_shown.json 을 본다 — 기록에 없어도 된다
+# ═══════════════════════════════════════════════════════════════
+FEED = []                   # [{id, cat, level, text}] — id 는 ms 시각(데몬을 다시 켜도 계속 커진다)
+FEED_KEEP = 50
+_feed_lock = threading.Lock()
+
+
+def _post_feed(cat, items):
+    top = items[0]
+    lines = [f"소식 · {CAT_NAME.get(cat, cat)} · {LEVEL_NAME.get(top['level'], '')}  {datetime.now():%H:%M}"]
+    for x in items[:5]:
+        lines.append("· " + (x.get("ko") or x["title"]))
+        if x.get("detail") and _is_korean(x["detail"]):
+            lines.append("   " + x["detail"])
+        if x.get("why"):
+            lines.append("   " + x["why"][:60])
+    if len(items) > 5:
+        lines.append(f"· 그 밖에 {len(items) - 5}건")
+    with _feed_lock:
+        fid = int(time.time() * 1000)
+        if FEED and fid <= FEED[-1]["id"]:
+            fid = FEED[-1]["id"] + 1
+        FEED.append({"id": fid, "cat": cat, "level": top["level"], "text": "\n".join(lines)})
+        del FEED[:-FEED_KEEP]
+
+
+def feed_after(after):
+    """(after 보다 뒤에 쌓인 것들, 마지막 id). after=None 이면 처음 묻는 것 — 지난 건 안 주고 마지막 id 만."""
+    with _feed_lock:
+        last = FEED[-1]["id"] if FEED else 0
+        new = [dict(x) for x in FEED if after is not None and x["id"] > after]
+    return new, last
+
+
 def _sentence(t):
     """끝맺음 정리 — 물음표는 살린다(지우면 질문 제목이 뜬금없는 단정으로 들렸다, 2026-09-17)."""
     t = re.sub(r"[.。…\s]+$", "", t or "")
@@ -1171,6 +1212,8 @@ def deliver(cat, items, *, speak=True, show=True, log=print, record=True):
     def appear():               # 눈에 보이는 쪽 — 목소리와 같은 순간에(_say 가 재생 직전에 부른다)
         if show:
             popup(tag, line, body, top["level"], sec=6 + 2 * top["level"])
+        if record:              # 대화창에도 글로(게임 중 배너를 접어도) — '뉴스'·'알림 다시' 는 답으로 이미 보인다
+            _post_feed(cat, items)
     if speak:
         _say(_speech(name, items), on_show=appear)
     else:

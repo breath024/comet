@@ -414,7 +414,8 @@ class Handler(BaseHTTPRequestHandler):
             _speak_async(reply)        # 글자를 먼저 보내고, 읽기는 뒤에서
 
     def _handle_news(self):
-        """{"on": true|false} = 소식 듣기 켜기/끄기('알림 켜/끔' 과 같은 스위치), 비우면 지금 상태만."""
+        """{"on": true|false} = 소식 듣기 켜기/끄기('알림 켜/끔' 과 같은 스위치), 비우면 지금 상태만.
+           {"after": id} = 그 뒤로 알린 소식(feed)도 같이 — 대화창이 말풍선으로 그린다. 답의 last 를 다음 after 로."""
         try:
             length = int(self.headers.get("Content-Length", 0))
             data = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
@@ -429,6 +430,9 @@ class Handler(BaseHTTPRequestHandler):
                 print(f"\n[소식 듣기] {'켬' if data['on'] else '끔'} (대화창 버튼)")
             else:
                 st = a.issues_state()
+            import issues
+            after = data.get("after")
+            st["feed"], st["last"] = issues.feed_after(after if isinstance(after, int) else None)
         except Exception as e:
             self._send(500, json.dumps({"error": str(e)}, ensure_ascii=False))
             return
