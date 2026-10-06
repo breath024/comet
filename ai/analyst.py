@@ -26,10 +26,17 @@ import marketlog
 import finance_news          # Only Money 엔진과 동일한 금융 RSS(1차 근거)
 import trace as _trace
 
-# 분석 전용 모델 — 정확·날카로움이 1순위(속도 무관)라 양 패스 모두 최고 성능 모델 고정.
-# (2026-06-19 A/B/C 실측: 27b/27b가 1차 추론 깊이·2차 할루시네이션 감사 모두 최고. 하이브리드는 14b 감사관이 약한 고리가 됨.)
-ANALYST_MODEL = "gemma4:26b"
-PLANNER_MODEL = "gemma4:26b"   # 나라·언어 선정은 가벼운 작업 → 빠른 모델
+# ── 두뇌: 조사형 작업은 구독 CLI(클로드·아스트라)가 먼저, 로컬은 예비 (2026-10-07) ─────
+#  호윤: "조사나 이런 것도 claude 나 gpt 로 해결할 수 있는 것들은 그쪽 codex·cli 불러서 해결".
+#  로컬 'gemma4:26b'(Q4 18GB)를 num_ctx 없이 부르면 16GB 에 안 올라가 9/22 이후 분석 자체가 실패했고,
+#  올라가도 웹에서 근거를 더 찾을 수단이 없다. → 1차(컨센서스)=클로드(웹검색), 2차(역발상 감사)=아스트라
+#  (웹검색) — 서로 다른 머리 둘이 검증한다(debate.py 와 같은 통로, API 키 아님·추가 과금 0).
+#  둘 다 막히면(한도·오류) 로컬 Q3 26b + num_ctx 고정(comet.HEAVY_MODEL·NUM_CTX 와 같은 값).
+# (2026-06-19 로컬 A/B/C 실측: 27b/27b 가 최고, 14b 감사관은 약한 고리 — 예비도 무거운 모델로 둔다.)
+ANALYST_MODEL = "huihui-gemma4-abliterated:26b-a4b-i1-q3_k_m"
+NUM_CTX = 32768
+PLANNER_MODEL = "gemma4:12b"   # 나라·언어 선정(폴백 검색 때만)은 가벼운 작업 → 빠른 모델
+CLOUD_TIMEOUT = 420            # 웹검색까지 하면 한 번에 1~4분
 
 # 언어 → DuckDuckGo 지역·언어 코드(현지 결과를 받기 위함) / 표시용 국가명
 LANG2KL = {"ko": "kr-ko", "en": "us-en", "zh": "cn-zh", "tw": "tw-tzh",
@@ -76,7 +83,7 @@ def _plan_languages(query, model=PLANNER_MODEL):
     """종목/테마와 엮인 나라들을 골라 현지어 검색어를 짠다. 실패 시 한국어+영어 폴백."""
     try:
         r = _chat(model=model, format="json",
-                     options={"temperature": 0, "num_predict": 512},
+                     options={"temperature": 0, "num_predict": 512, "num_ctx": 8192},
                      messages=[{"role": "user", "content": PLAN_PROMPT + query}])
         targets = (json.loads(r["message"]["content"]) or {}).get("targets") or []
         clean, langs = [], set()
@@ -470,6 +477,42 @@ def _think_strip(s):
     return s.strip()
 
 
+def _cloud(who, system, user):
+    """구독 CLI 한 번 — 클로드는 WebSearch 만 허락, 아스트라는 web_search 켬. 글만 받는다."""
+    import debate                     # ask_claude / ask_astra (ANTHROPIC_API_KEY 뺀 자식 환경)
+    prompt = (system + "\n\n" + user + "\n\n(파일은 읽거나 쓰지 말고 답만 글로. [근거]에 없는 사실을 "
+              "웹에서 새로 찾아 쓰면 그 옆에 주소(URL)를 달아라 — 주소 없는 새 숫자는 쓰지 마라.)")
+    if who == "클로드":
+        return _think_strip(debate.ask_claude(prompt, timeout=CLOUD_TIMEOUT, tools="WebSearch"))
+    return _think_strip(debate.ask_astra(prompt, timeout=CLOUD_TIMEOUT, web=True))
+
+
+def _run_pass(system, user, order, local_model, local_opts, keep_alive, tr, dead):
+    """order 순서로 두뇌를 불러 첫 성공 → (글, 두뇌). dead = 이미 실패한 두뇌(다음 패스에서 건너뜀 —
+       한도에 걸린 CLI 를 또 불러 몇 분씩 기다리지 않게). 다 실패하면 ('', 마지막 오류)."""
+    err = ""
+    for who in order:
+        if who in dead:
+            continue
+        try:
+            if who == "로컬":
+                r = _chat(model=local_model, keep_alive=keep_alive,
+                          options={**local_opts, "num_ctx": NUM_CTX},
+                          messages=[{"role": "system", "content": system},
+                                    {"role": "user", "content": user}])
+                out = _think_strip(r["message"]["content"])
+            else:
+                out = _cloud(who, system, user)
+            if out:
+                return out, who
+            err = f"{who} 빈 답"
+        except Exception as e:
+            err = f"{who}: {str(e)[:150]}"
+        dead.add(who)
+        tr.warn(f"{err} — 다음 두뇌로")
+    return "", err
+
+
 def analyze(query, model, keep_alive="5m", verbose=True, model_audit=None):
     """수집 + 판단 전체. comet.py 가 model/keep_alive 를 넘긴다. 반환 {ok, answer, ...}.
        model_audit 를 주면 2차(감사·역발상)만 다른 모델로 돌린다(하이브리드)."""
@@ -497,7 +540,7 @@ def judge(ev, model1, model2=None, keep_alive="5m", verbose=True, trace=None):
         tr.warn(f"정세로그 적재 건너뜀: {e}")
 
     tr.step("컨센서스 · 2차효과 추론",
-            f"{model1} · 실데이터 {'반영' if ev['px'] else '—'}")
+            f"클로드(웹검색) → 아스트라 → 로컬 순 · 실데이터 {'반영' if ev['px'] else '—'}")
 
     # 강제 규칙·형식은 유저 메시지 '끝'에 둔다(모델은 최신 지시를 가장 잘 따른다).
     reg = _regime(ev.get("px") or {})
@@ -536,19 +579,14 @@ def judge(ev, model1, model2=None, keep_alive="5m", verbose=True, trace=None):
         "밸류에이션 부담과 실적 모멘텀 판단에 적극 인용해라(블로그 풍문보다 이 실데이터 우선).\n"
         "근거에 없는 숫자는 절대 쓰지 마라. 모르면 '자료에 없음'.")
 
-    # 1차: 컨센서스 + 2차효과
-    try:
-        r1 = _chat(
-            model=model1, keep_alive=keep_alive,
-            options={"temperature": 0.1, "num_predict": 1300},
-            messages=[{"role": "system", "content": CONSENSUS_SYS},
-                      {"role": "user", "content": user1}],
-        )
-        pass1 = _think_strip(r1["message"]["content"])
-    except Exception as e:
-        return {"ok": False, "msg": f"1차 분석 실패: {e}"}
+    # 1차: 컨센서스 + 2차효과 — 클로드 먼저
+    dead = set()
+    pass1, who1 = _run_pass(CONSENSUS_SYS, user1, ["클로드", "아스트라", "로컬"], model1,
+                            {"temperature": 0.1, "num_predict": 1300}, keep_alive, tr, dead)
+    if not pass1:
+        return {"ok": False, "msg": f"1차 분석 실패: {who1}"}
 
-    tr.think("역발상 · 사실 감사  —  1차를 의심하고 출처와 대조")
+    tr.think(f"역발상 · 사실 감사  —  1차({who1})를 의심하고 출처와 대조")
 
     user2 = (
         "[근거]\n" + evidence + "\n\n"
@@ -575,29 +613,23 @@ def judge(ev, model1, model2=None, keep_alive="5m", verbose=True, trace=None):
         "호윤 보유에 닿으면 더 담을지/줄일지/갈아탈지 직접 짚어라(근거에 '호윤 실제 보유 현황'이 "
         "있으면 그 종목·수량·평단·손익 기준으로 구체적으로, 없으면 일반 보유 엔비디아·TQQQ·우주株 기준).")
 
-    # 2차: 역발상 + 사실 감사 (이중 판단)
-    try:
-        r2 = _chat(
-            model=model2, keep_alive=keep_alive,
-            options={"temperature": 0, "num_predict": 1800},
-            messages=[{"role": "system", "content": CHALLENGER_SYS},
-                      {"role": "user", "content": user2}],
-        )
-        pass2 = _think_strip(r2["message"]["content"])
-    except Exception as e:
+    # 2차: 역발상 + 사실 감사 (이중 판단) — 1차와 '다른 머리' 가 먼저(같은 모델은 자기 글을 덜 의심한다)
+    order2 = ["아스트라", "클로드", "로컬"] if who1 == "클로드" else ["클로드", "아스트라", "로컬"]
+    pass2, who2 = _run_pass(CHALLENGER_SYS, user2, order2, model2,
+                            {"temperature": 0, "num_predict": 1800}, keep_alive, tr, dead)
+    if not pass2:
         # 1차라도 살려서 반환
-        return {"ok": True, "answer": pass1 + "\n\n(2차 검증 실패: " + str(e) + ")",
-                "partial": True}
+        return {"ok": True, "answer": pass1 + f"\n\n(2차 검증 실패: {who2})", "partial": True}
 
     # 실계산 가격은 파이썬이 박아 그라운딩 보장(LLM 무시해도 진짜 숫자는 보인다)
     answer = ("### 📈 실데이터 (Yahoo, 계산값)\n" + _px_lines(ev["px"])
               + (("\n\n" + financials.fmt(ev["fin"]))
                  if ev.get("fin") and ev["fin"].get("ok") else "")
-              + "\n\n### 🧠 1차 분석 (컨센서스 + 2차효과)\n" + pass1
-              + "\n\n### 🔴 2차 검증 (역발상 + 사실 감사)\n" + pass2
+              + f"\n\n### 🧠 1차 분석 (컨센서스 + 2차효과) · {who1}\n" + pass1
+              + f"\n\n### 🔴 2차 검증 (역발상 + 사실 감사) · {who2}\n" + pass2
               + "\n\n### 🔗 출처 (검토용 링크)\n" + _sources_footer(ev))
-    tr.done("분석 완료")
-    return {"ok": True, "answer": answer, "pass1": pass1, "pass2": pass2,
+    tr.done(f"분석 완료 — 1차 {who1} · 2차 {who2}")
+    return {"ok": True, "answer": answer, "pass1": pass1, "pass2": pass2, "brains": (who1, who2),
             "ticker": ev["ticker"], "n_sources": ev["main"].get("count", 0)}
 
 
