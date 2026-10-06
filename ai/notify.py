@@ -7,7 +7,10 @@
 #   chat_id: 봇과 대화 한 번 건 뒤 get_chat_id()로 자동 조회.
 # ═══════════════════════════════════════════════════════════════
 import os
+import re
+import html
 import json
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -64,16 +67,28 @@ def get_chat_id() -> dict:
     return {"ok": True, "msg": f"chat_id 저장됨: {cid} ({chat.get('first_name','')})"}
 
 
-def send(text: str) -> dict:
+def _plain(text):
+    """HTML 태그를 벗긴 맨글 — 텔레그램이 HTML 을 거절했을 때 다시 보낼 글."""
+    return html.unescape(re.sub(r"<[^>]+>", "", text or ""))
+
+
+def send(text: str, html_mode=True) -> dict:
     cfg = _load_cfg()
     token, cid = cfg.get("token"), cfg.get("chat_id")
     if not (token and cid):
         return {"ok": False, "msg": "텔레그램 미설정 (token/chat_id 필요)"}
+    data = {"chat_id": cid, "text": text[:4000], "disable_web_page_preview": "true"}
+    if html_mode:
+        data["parse_mode"] = "HTML"
     try:
-        res = _call("sendMessage", token, {
-            "chat_id": cid, "text": text[:4000],
-            "parse_mode": "HTML", "disable_web_page_preview": "true",
-        })
+        res = _call("sendMessage", token, data)
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", "ignore")
+        # 태그가 깨진 글(모델이 쓴 '<', 4000자에서 잘린 태그)은 400 "can't parse entities" 로
+        # 통째로 거절된다 — 그대로 두면 같은 글로 재시도만 돈다. 태그를 벗겨 한 번 더 보낸다.
+        if html_mode and "parse entities" in body:
+            return send(_plain(text), html_mode=False)
+        return {"ok": False, "msg": f"전송 실패: {e} {body[:200]}"}
     except Exception as e:
         return {"ok": False, "msg": f"전송 실패: {e}"}
     return {"ok": bool(res.get("ok")), "msg": "전송됨" if res.get("ok") else str(res)}
