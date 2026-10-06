@@ -138,6 +138,7 @@ _comet = comet.Comet()
 _comet.auto_approve = True        # 데몬(폰)은 input() 불가 → 자동승인. 콘솔은 False(기본).
 _lock = threading.Lock()          # 단일 사용자 — 요청 직렬화로 history 보호
 _comet.autonomy.modes["talk"].lock = _lock   # Alt 두 번 말걸기도 폰 요청과 같은 줄에 선다
+_comet.autonomy.modes["telegram"].lock = _lock   # 텔레그램으로 온 질문도 같은 줄(답할 때마다 읽으니 복원 뒤에 꽂아도 된다)
 
 
 # ── 창을 X 로 닫아도, 줄여 둔 다른 앱 볼륨은 되돌리고 죽는다 ──

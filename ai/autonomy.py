@@ -34,6 +34,8 @@ DEFAULTS = {
                   "modes": {"ai": "굵직", "econ": "굵직"}, "quiet": []},
     # talk: Alt 두 번 → 말 걸기. gap = 두 번 사이 최대 간격(초)
     "talk":      {"enabled": True, "gap": 0.45},
+    # telegram: 텔레그램으로 물으면 답한다(호윤 대화방만). 호윤이 만들어 달라고 해서 처음부터 켜 둔다(10/07)
+    "telegram":  {"enabled": True},
 }
 
 
@@ -704,6 +706,142 @@ class TalkMode(_Mode):
 
 
 # ═══════════════════════════════════════════════════════════════
+#  telegram — 텔레그램으로 물으면 답한다 (폰에서 코멧에게 말 걸기, 2026-10-07)
+#   호윤: "내가 텔레그램으로 얘한테 질문해도 받았던가" → 원래는 보내기만 했다(받는 건 처음 연결할 때 chat_id 찾기뿐).
+#   getUpdates 를 길게 기다려(long polling) 새 말을 받는다 — 서버를 밖에 안 열어도 되고 키도 이미 있다.
+#   ★저장된 호윤 chat_id 에서 온 글만 받는다 — 봇 이름을 알아낸 남이 말을 걸어도 무시.
+#   ★한 PC 에 하나만 — 같은 봇 토큰을 두 곳이 기다리면 텔레그램이 409 로 서로 끊는다(데몬 + run.bat). 뮤텍스.
+#   ★꺼져 있는 동안 온 말은 STALE_SEC 안의 것만 답한다 — 몇 시간 전 질문에 뜬금없이 답하지 않게.
+#   답은 글로만(폰으로 물었으면 PC 앞에 없다 — 스피커로 안 읽는다). 생각하는 동안 '입력 중…', 오래 걸리면 한 줄 먼저.
+# ═══════════════════════════════════════════════════════════════
+class TelegramMode(_Mode):
+    name = "telegram"
+    desc = "텔레그램으로 물으면 답함 (호윤 대화방만)"
+    MUTEX = "Local\\COMET_TELEGRAM"
+    LONG_POLL = 25          # 초 — 텔레그램이 새 말이 올 때까지 붙잡고 있다가 돌려준다(끄면 이만큼 안에 멈춤)
+    STALE_SEC = 600         # 이보다 오래된 말은 답하지 않는다(꺼져 있을 때 온 것)
+    SLOW_SEC = 30           # 이보다 오래 생각하면 "끝나면 보낼게" 한 줄 먼저
+
+    def __init__(self, cfg, log, respond_fn=None):
+        super().__init__(cfg, log)
+        self.respond_fn = respond_fn      # respond(text) -> reply (PC 에서 소리 안 냄)
+        self.lock = None                  # 데몬이 _lock 을 꽂는다 — 폰 웹·대화창·Alt 두 번과 같은 줄에 선다
+
+    def available(self):
+        import notify
+        if self.respond_fn is None:
+            return False, "응답 연결(respond_fn)이 없음"
+        if not notify.configured():
+            return False, "텔레그램 미설정(token/chat_id) — notify.py 참고"
+        return True, ""
+
+    def _answer(self, text):
+        import time
+        import notify
+        done = threading.Event()
+
+        def busy():                       # 생각하는 동안 '입력 중…'(5초짜리라 4초마다), 오래 걸리면 한 줄 먼저
+            t0, told = time.time(), False
+            while not done.wait(4):
+                notify.typing()
+                if not told and time.time() - t0 > self.SLOW_SEC:
+                    notify.send("생각이 좀 걸리네 — 끝나면 바로 보낼게.", html_mode=False)
+                    told = True
+
+        notify.typing()
+        threading.Thread(target=busy, name="telegram-typing", daemon=True).start()
+        try:
+            if self.lock:
+                with self.lock:
+                    reply = self.respond_fn(text)
+            else:
+                reply = self.respond_fn(text)
+        except Exception as e:
+            reply = f"[오류] {e}"
+        finally:
+            done.set()
+        return (reply or "").strip() or "(할 말이 없대 — 빈 답)"
+
+    def _handle(self, u):
+        import time
+        import notify
+        msg = u.get("message") or {}
+        if not msg:
+            return
+        chat = str((msg.get("chat") or {}).get("id", ""))
+        if chat != notify.chat_id():
+            self.log(f"[텔레그램] 모르는 대화방({chat})에서 온 말 — 무시")
+            return
+        text = (msg.get("text") or "").strip()
+        if time.time() - msg.get("date", 0) > self.STALE_SEC:
+            self.log(f"[텔레그램] 꺼져 있을 때 온 말이라 건너뜀: {text[:40]}")
+            return
+        if not text:
+            notify.send("지금은 글만 알아들어 — 사진·음성은 아직 못 받아.", html_mode=False)
+            return
+        self.log(f"[텔레그램] 받음: {text[:60]}")
+        reply = self._answer(text)
+        r = notify.send_long(reply)
+        self.log(f"[텔레그램] 답함 {len(reply)}자 · {r.get('parts')}통 — {r.get('msg', '')[:60]}")
+
+    def _run(self):
+        import urllib.error
+        import notify
+        mutex = _named_mutex(self.MUTEX)
+        if mutex is False:
+            self.log("[텔레그램] 다른 COMET 이 이미 받고 있음 — 여기선 안 받음")
+            return
+        try:
+            self.log("[텔레그램] 가동 — 호윤 대화방에서 온 말에 답함")
+            offset, wait = None, 5
+            while not self._stop.is_set():
+                try:
+                    ups = notify.updates(offset, timeout=self.LONG_POLL)
+                    wait = 5
+                except urllib.error.HTTPError as e:
+                    if e.code == 401:
+                        self.log("[텔레그램] 봇 토큰이 틀림(401) — 받기 멈춤")
+                        return
+                    wait = 60 if e.code == 409 else min(wait * 2, 120)   # 409 = 다른 곳이 같은 봇을 기다리는 중
+                    self.log(f"[텔레그램] 받기 실패 {e.code} — {wait}초 뒤 다시")
+                    self._stop.wait(wait)
+                    continue
+                except Exception as e:
+                    self.log(f"[텔레그램] 받기 실패: {str(e)[:80]} — {wait}초 뒤 다시")
+                    self._stop.wait(wait)
+                    wait = min(wait * 2, 120)
+                    continue
+                for u in ups:
+                    offset = u.get("update_id", 0) + 1     # 먼저 올려 둔다 — 답하다 죽어도 같은 말을 또 받지 않게
+                    if self._stop.is_set():
+                        break
+                    try:
+                        self._handle(u)
+                    except Exception as e:
+                        self.log(f"[텔레그램] 처리 오류: {e}")
+        finally:
+            if mutex:
+                import ctypes
+                ctypes.WinDLL("kernel32").CloseHandle(ctypes.c_void_p(mutex))
+
+
+def _named_mutex(name):
+    """이 PC 에서 하나만 — 잡으면 핸들, 남이 잡고 있으면 False, 윈도우가 아니면 None(IssuesMode._single 과 같은 방식)."""
+    if os.name != "nt":
+        return None
+    import ctypes
+    from ctypes import wintypes
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateMutexW.restype = wintypes.HANDLE
+    k32.CreateMutexW.argtypes = (ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR)
+    h = k32.CreateMutexW(None, False, name)
+    if ctypes.get_last_error() == 183:              # ERROR_ALREADY_EXISTS
+        k32.CloseHandle(wintypes.HANDLE(h))
+        return False
+    return h
+
+
+# ═══════════════════════════════════════════════════════════════
 #  컨트롤러 — comet 이 토글/상태만 호출
 # ═══════════════════════════════════════════════════════════════
 class Autonomy:
@@ -722,6 +860,8 @@ class Autonomy:
             "talk":      TalkMode(self.cfg["talk"], self.log,
                                   respond_fn=talk_respond_fn or (lambda t: respond_fn(t, speak=False)),
                                   speak_fn=speak_fn, cancel_fn=cancel_fn),
+            "telegram":  TelegramMode(self.cfg["telegram"], self.log,
+                                      respond_fn=(lambda t: respond_fn(t, speak=False)) if respond_fn else None),
         }
 
     # 저장된 enabled 모드 복원(데몬/콘솔 시작 시 호출)
@@ -889,7 +1029,8 @@ class Autonomy:
                     return self.disable(name)
                 return f"{name}: '켜' 또는 '꺼'로 (예: 자율모드 {name} 켜)"
         return ("자율모드 사용법: '자율모드'(상태) · '자율모드 proactive 켜/꺼' · "
-                "'자율모드 brief 켜/꺼' · '자율모드 wake 켜/꺼' · '자율모드 talk 켜/꺼'(Alt 두 번 말걸기)")
+                "'자율모드 brief 켜/꺼' · '자율모드 wake 켜/꺼' · '자율모드 talk 켜/꺼'(Alt 두 번 말걸기) · "
+                "'자율모드 telegram 켜/꺼'(텔레그램으로 물으면 답)")
 
 
 if __name__ == "__main__":
