@@ -15,6 +15,8 @@
 #     몇 초마다 데몬에 물어 상태를 맞춘다 — 콘솔에서 '알림 끔' 해도 버튼이 따라 바뀐다.
 #   · 소식이 알려지면 같은 순간 여기에도 글로 남는다(왼쪽 색 띠 말풍선 — 띠 색 = 배너와 같은 강도 색).
 #     창을 연 뒤에 온 것만. 대화 기록에는 안 들어간다(이유는 issues.py 의 FEED 머리말).
+#   · 데몬을 껐다 켜도 이 창은 그대로 두면 된다 — 보낼 때마다 새로 붙는다. 꺼짐·다시 붙음은 머리말과 말풍선으로.
+#   · 창은 하나만 — 또 띄우면(COMET 켜기 다시 누르기 등) 새 창 대신 떠 있는 창이 앞으로 나온다.
 # ═══════════════════════════════════════════════════════════════
 import json
 import os
@@ -25,6 +27,7 @@ import urllib.request
 
 from PySide6.QtCore import Qt, QObject, Signal, QTimer
 from PySide6.QtGui import QFont, QIcon, QKeySequence, QShortcut
+from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLabel,
                                QPushButton, QScrollArea, QSizePolicy,
                                QTextEdit, QVBoxLayout, QWidget)
@@ -40,6 +43,7 @@ BACKLOG = 20          # 열 때 보여줄 지난 대화 수(메시지 개수)
 TIMEOUT = 600         # 27b·분석이면 몇 분 걸린다 — 넉넉히
 BUBBLE_MAX = 0.78     # 말풍선 최대 너비(창 대비)
 NEWS_POLL_MS = 3000   # 소식 듣기 상태를 데몬에 묻는 간격
+ONE = "COMET_chat_win"   # 창은 하나만 — 먼저 뜬 창이 이 이름(윈도우 이름 있는 파이프)으로 '앞으로 나와' 를 듣는다
 
 BG, CARD, LINE = "#0e0f12", "#1c1e24", "#23252b"
 FG, SUB, ME = "#e8e8ea", "#6b6e76", "#2a6df4"
@@ -76,6 +80,26 @@ def _alive():
             return json.loads(r.read().decode("utf-8")).get("ok") is True
     except Exception:
         return False
+
+
+def _wake_running():
+    """이미 떠 있는 대화창이 있으면 그 창을 앞으로 불러내고 True — 이번 것은 안 띄운다.
+       ★바탕화면 'COMET 켜기'(COMET_start.bat)는 데몬이 떠 있으면 대화창을 '또' 띄운다. 창을 열어 둔 채
+         켜기를 다시 누르면 창이 하나씩 늘었다(둘 다 3초마다 데몬에 묻고, 소식 말풍선도 양쪽에 그린다)."""
+    s = QLocalSocket()
+    s.connectToServer(ONE)
+    if not s.waitForConnected(500):
+        return False
+    try:
+        import ctypes
+        ctypes.windll.user32.AllowSetForegroundWindow(-1)    # ASFW_ANY — 먼저 뜬 창이 맨 앞으로 나올 수 있게
+    except Exception:
+        pass
+    s.write(b"show")
+    s.flush()
+    s.waitForBytesWritten(500)
+    s.disconnectFromServer()
+    return True
 
 
 def _backlog():
@@ -163,6 +187,7 @@ class ChatWindow(QWidget):
         self._busy = False
         self._pending = None          # 대답을 채워 넣을 말풍선
         self._secs = 0
+        self._up = None               # 데몬에 붙나 — None = 아직 모름(_check_daemon 이 처음 채운다)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -258,6 +283,10 @@ class ChatWindow(QWidget):
         QTimer.singleShot(50, self._check_daemon)
         self.input.setFocus()
 
+        self._one = QLocalServer(self)          # 다음에 또 띄우면 새 창 대신 이 창이 앞으로(_wake_running)
+        self._one.newConnection.connect(self._woken)
+        self._one.listen(ONE)
+
     # ── 화면 ──
     def _bubble(self, text, who, level=2):
         lab = Bubble(text)
@@ -316,11 +345,36 @@ class ChatWindow(QWidget):
                 self._bubble(text, who)
 
     def _check_daemon(self):
-        if _alive():
+        self._up = _alive()
+        if self._up:
             self.status.setText("데몬 연결됨")
         else:
             self.status.setText("데몬 꺼짐")
-            self._bubble("데몬이 안 떠 있다 — run_daemon.bat 을 먼저 띄울 것.", "sys")
+            self._bubble("데몬이 안 떠 있다 — run_daemon.bat 을 먼저 띄울 것(뜨면 이 창에 저절로 붙는다).", "sys")
+
+    def _link(self, up):
+        """데몬 연결 상태가 바뀐 순간에만 머리말·말풍선으로 알린다.
+           ★예전엔 창을 열 때 한 번만 봐서, 데몬을 껐다 켜도 머리말이 처음 값('데몬 연결됨'/'데몬 꺼짐')에 머물렀다.
+             보내기는 매번 새로 붙으니 다시 켜면 원래 그냥 됐다 — 그걸 화면이 말해 주지 않았을 뿐."""
+        if self._up is None or up == self._up:
+            return                                  # 처음 한 번은 _check_daemon 몫
+        self._up = up
+        if not self._busy:                          # 생각 중이면 '생각 중… N초' 는 그대로 둔다
+            self.status.setText("데몬 연결됨" if up else "데몬 꺼짐")
+        self._bubble("데몬 다시 연결됨 — 이어서 말하면 된다." if up
+                     else "데몬이 꺼졌다 — 다시 켜면 이 창에 저절로 다시 붙는다(창은 그대로 둬도 된다).", "sys")
+
+    def _woken(self):
+        """또 띄우려던 쪽(_wake_running)이 불렀다 — 이 창을 앞으로."""
+        while self._one.hasPendingConnections():
+            c = self._one.nextPendingConnection()
+            c.disconnectFromServer()
+            c.deleteLater()
+        if self.isMinimized():
+            self.showNormal()
+        self.show()
+        self.raise_()
+        self.activateWindow()
 
     # ── 주고받기 ──
     def send(self):
@@ -379,6 +433,8 @@ class ChatWindow(QWidget):
     def _news_arrived(self, ok, res, toggled):
         self._news_busy = False
         self.newsb.setEnabled(True)
+        # 3초마다 묻는 이 길로 데몬이 꺼졌다/다시 떴다를 안다. 연결 자체가 안 될 때만 '꺼짐'(4xx·5xx 는 떠 있는 것)
+        self._link(ok or not str(res).startswith("[연결 안 됨]"))
         if ok and isinstance(res, dict) and "on" in res:
             self.news_on = bool(res["on"])
             for e in res.get("feed") or []:                    # 새로 알린 소식 → 말풍선
@@ -442,6 +498,8 @@ class ChatWindow(QWidget):
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("COMET")
+    if _wake_running():                    # 이미 떠 있으면 그 창을 앞으로 — 새 창은 안 띄운다
+        return
     win = ChatWindow()
     win.show()
     sys.exit(app.exec())
