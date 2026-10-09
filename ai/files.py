@@ -85,10 +85,26 @@ def list_dir(path: str = "") -> dict:
     return {"ok": True, "path": real, "count": len(items), "items": items[:100]}
 
 
+# 비밀 파일 — 내용을 읽어 대화(모델 · 텔레그램 기록)로 내보내지 않는다(10/10 RawCut 보안 점검 T-18)
+_SECRET_DIRS = (os.path.normcase(os.path.join(os.path.expanduser("~"), "Desktop", "api")),
+                os.path.normcase(os.path.join(os.path.expanduser("~"), ".ssh")))
+_SECRET_NAMES = {"admin_config.json", "alert_telegram.json", "telegram_config.json", "access_config.json",
+                 "accounts.json", "cf_token.txt", "judge_key.txt", "resend_key.txt", "api.txt", "default.toml"}
+
+
+def _is_secret(real: str) -> bool:
+    n = os.path.normcase(os.path.abspath(real))
+    base = os.path.basename(n)
+    return (any(n == d or n.startswith(d + os.sep) for d in _SECRET_DIRS)
+            or base in _SECRET_NAMES or base.endswith((".pem", ".key", "_key.txt", "_token.txt")))
+
+
 def read_file(path: str) -> dict:
     real = _resolve(path)
     if not real or not os.path.isfile(real):
         return {"ok": False, "msg": f"'{path}' 파일을 못 찾음"}
+    if _is_secret(real):
+        return {"ok": False, "msg": "비밀 파일(키 · 토큰)이라 내용은 안 읽어."}
     try:
         with open(real, "r", encoding="utf-8", errors="replace") as f:
             text = f.read(MAX_READ + 1)

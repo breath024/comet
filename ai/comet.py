@@ -940,6 +940,9 @@ class Comet:
         # ── 코딩 명령(콘솔·폰 공용): "코딩 [@폴더] [/code|/debug|…] <할 일>" ──
         #    코딩 에이전트(coder_bridge)로 넘긴다. 비대화형 auto+백업(.comet_bak).
         t = text.strip()
+        import remote_guard
+        if t.startswith("코딩") and remote_guard.active():
+            return remote_guard.REFUSE
         if t.startswith("코딩 ") or t == "코딩" or t.startswith("코딩:"):
             import coder_bridge
             rest = t[2:].lstrip(": ").strip()
@@ -1135,6 +1138,8 @@ class Comet:
             return cloud.set_active(_BRAIN_CMD[low])
         # ── 클라우드 키/모델 갈아끼우기 (재시작 불필요·키는 대화기록에 안 남김) ──
         #   원문 t 로 처리(키 대소문자 보존). 프로바이더로 해석될 때만 가로채 일반대화 보호.
+        if (t.startswith("키 ") or t.startswith("키삭제")) and remote_guard.active():
+            return remote_guard.REFUSE       # 클라우드 키를 남의 것으로 바꾸면 대화가 그쪽으로 간다(10/10 T-18)
         if t.startswith("키삭제") or t.startswith("키 지워") or t.startswith("키 빼"):
             import cloud
             who = t.replace("키삭제", "").replace("키 지워", "").replace("키 빼", "").strip()
@@ -1186,6 +1191,9 @@ class Comet:
 
         # ── 셸 허용: 위임했던 일이 셸 앞에서 멈췄을 때, 호윤이 허락하면 셸 켜고 다시 ──
         #   호윤 지시(9/22) "파일수정까지 자동, 셸은 확인받고" 의 '확인' 쪽 절반.
+        if getattr(self, "_pending_shell", None) and remote_guard.active() and t.replace(" ", "") in (
+                "셸허용", "쉘허용", "셸켜", "쉘켜", "셸돌려", "명령허용", "허용", "돌려", "그래돌려"):
+            return remote_guard.REFUSE       # 셸 허락은 PC 앞에서만(같은 텔레그램 통로로 받으면 확인이 아니다 · 10/10)
         if getattr(self, "_pending_shell", None) and t.replace(" ", "") in (
                 "셸허용", "쉘허용", "셸켜", "쉘켜", "셸돌려", "명령허용", "허용", "돌려", "그래돌려"):
             ps = self._pending_shell
@@ -1199,6 +1207,8 @@ class Comet:
             return full
 
         # ── 코딩 세션 이어받기: ask 로 멈춘 작업이 있으면 다음 입력으로 resume ──
+        if self._pending_coding and remote_guard.active():
+            return remote_guard.REFUSE
         if self._pending_coding:
             pc = self._pending_coding
             self._pending_coding = None
@@ -1454,6 +1464,9 @@ class Comet:
 
     def _delegate(self, task, target=None, shell_ok=False):
         """서브에이전트에게 실제 작업을 시키고, 한 일을 텍스트로 돌려준다."""
+        import remote_guard
+        if remote_guard.active():            # 텔레그램에서 온 말이면 위임 안 함(10/10 T-18)
+            return {"ok": False, "text": remote_guard.REFUSE, "msg": remote_guard.REFUSE}
         root = self._delegate_root(task, target)
         engine = self._delegate_engine(task)
         where = root or "바탕화면"

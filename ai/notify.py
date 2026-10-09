@@ -45,12 +45,16 @@ def _call(method, token, data):
         return json.loads(r.read().decode("utf-8"))
 
 
-def get_chat_id() -> dict:
+def get_chat_id(force: bool = False) -> dict:
     """봇과 한 번 대화한 뒤 호출 → 최근 메시지에서 chat_id를 찾아 저장."""
     cfg = _load_cfg()
     token = cfg.get("token")
     if not token:
         return {"ok": False, "msg": "telegram_config.json에 token부터 넣어줘 (@BotFather 발급)"}
+    # 이미 있으면 덮어쓰지 않는다 — 마지막으로 말 건 사람을 주인으로 저장해서, 남이 /start 를 보내 두면
+    #   그 방이 「호윤 대화방」이 됐다(10/10 T-18). 바꾸려면 `python notify.py --reset`.
+    if cfg.get("chat_id") and not force:
+        return {"ok": True, "msg": "chat_id 이미 있음 — 바꾸려면 python notify.py --reset"}
     try:
         res = _call("getUpdates", token, {})
     except Exception as e:
@@ -58,6 +62,13 @@ def get_chat_id() -> dict:
     updates = res.get("result", [])
     if not updates:
         return {"ok": False, "msg": "봇에게 아무 메시지나 한 번 보낸 뒤 다시 실행해줘 (예: '안녕')"}
+    chats = {}
+    for u in updates:
+        c = (u.get("message") or {}).get("chat") or {}
+        if c.get("id"):
+            chats[c["id"]] = c
+    if len(chats) != 1:                     # 여러 대화방이 말을 걸어 뒀으면 고르지 않는다(남이 끼어든 것일 수 있다)
+        return {"ok": False, "msg": "봇에게 말 건 대화방이 %d개야 — 다른 사람 글이 섞였을 수 있어서 저장 안 함." % len(chats)}
     chat = updates[-1].get("message", {}).get("chat", {})
     cid = chat.get("id")
     if not cid:
@@ -216,5 +227,5 @@ if __name__ == "__main__":
     import sys, io
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
     print("configured:", configured())
-    print(get_chat_id() if configured() or _load_cfg().get("token") else
+    print(get_chat_id(force="--reset" in sys.argv) if configured() or _load_cfg().get("token") else
           "telegram_config.json에 {\"token\":\"...\"} 먼저 넣어줘")

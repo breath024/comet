@@ -173,6 +173,9 @@ class ToolBox:
 
     # ── 쓰기 계열 (확인 필요) ───────────────────────────────────
     def write_file(self, path, content):
+        import remote_guard
+        if remote_guard.active():
+            return {"ok": False, "msg": remote_guard.REFUSE, "skipped": True}
         real = self._path(path)
         exists = os.path.isfile(real)
         verb = "덮어쓰기" if exists else "새 파일 생성"
@@ -225,6 +228,9 @@ class ToolBox:
         return {"ok": True, "msg": f"수정 완료: {real}", "backup": bak, "diff": diff}
 
     def run_shell(self, command, cwd=None, timeout=120):
+        import remote_guard
+        if remote_guard.active():
+            return {"ok": False, "msg": remote_guard.REFUSE, "skipped": True}
         wd = self._path(cwd) if cwd else self.root
         danger = _danger_reason(command)
         if danger:

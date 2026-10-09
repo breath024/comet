@@ -750,12 +750,14 @@ class TelegramMode(_Mode):
 
         notify.typing()
         threading.Thread(target=busy, name="telegram-typing", daemon=True).start()
+        import remote_guard
         try:
-            if self.lock:
-                with self.lock:
+            with remote_guard.on():          # 원격 표시 — 코딩 · 셸 · 위임 · 파일 쓰기는 막힌다(10/10 T-18)
+                if self.lock:
+                    with self.lock:
+                        reply = self.respond_fn(text)
+                else:
                     reply = self.respond_fn(text)
-            else:
-                reply = self.respond_fn(text)
         except Exception as e:
             reply = f"[오류] {e}"
         finally:
@@ -773,6 +775,12 @@ class TelegramMode(_Mode):
             self.log(f"[텔레그램] 모르는 대화방({chat})에서 온 말 — 무시")
             return
         text = (msg.get("text") or "").strip()
+        # 남의 글을 전달(forward)한 것 · 다른 봇을 거친 글은 명령으로 받지 않는다 — 호윤이 쓴 글처럼 돌았다(10/10 T-18)
+        if any(k in msg for k in ("forward_origin", "forward_from", "forward_from_chat", "forward_sender_name",
+                                  "forward_date", "via_bot", "is_automatic_forward")):
+            self.log(f"[텔레그램] 전달된 글이라 건너뜀: {text[:40]}")
+            notify.send("전달된 글은 명령으로 안 받아 — 직접 써 줘.", html_mode=False)
+            return
         if time.time() - msg.get("date", 0) > self.STALE_SEC:
             self.log(f"[텔레그램] 꺼져 있을 때 온 말이라 건너뜀: {text[:40]}")
             return
