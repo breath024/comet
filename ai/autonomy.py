@@ -235,7 +235,9 @@ class BriefMode(_Mode):
                 busy, _ = self.gpu_busy_fn()
             if not busy:
                 import issues
-                body = "\n".join(digest_text.splitlines()[1:5])
+                import notify                  # 아침 할 일은 텔레그램용 HTML — 배너엔 태그 벗긴 맨글로
+                plain = [l for l in notify._plain(digest_text).splitlines()[1:] if l.strip()]
+                body = "\n".join(plain[:4])
                 issues.popup("COMET · 오늘 할 일", line[:60], body, level=2, sec=10)
             import voice
             voice.Mouth().speak(line)
