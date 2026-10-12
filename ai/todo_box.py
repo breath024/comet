@@ -208,7 +208,7 @@ def _mk_md(today, month, day, roll_month=False):
 # ═══════════════════════════════════════════════════════════════
 #  저장·조회
 # ═══════════════════════════════════════════════════════════════
-def add(content, tag=None, due=None):
+def add(content, tag=None, due=None, src=None):
     raw = (content or "").strip()
     if not raw:
         return {"ok": False, "msg": "뭘 해야 하는지 같이 적어줘. 예: 할일 RawCut 납품본 내일까지"}
@@ -222,8 +222,8 @@ def add(content, tag=None, due=None):
         if dup:
             return {"ok": True, "id": dup["id"], "msg": f"이미 열려 있는 할일이야 (#{dup['id']})."}
         now = _now()
-        cur = c.execute("INSERT INTO memory(kind, content, status, created, updated, tag, due) "
-                        "VALUES('todo', ?, 'open', ?, ?, ?, ?)", (body, now, now, tag, due))
+        cur = c.execute("INSERT INTO memory(kind, content, status, created, updated, tag, due, src) "
+                        "VALUES('todo', ?, 'open', ?, ?, ?, ?, ?)", (body, now, now, tag, due, src))
         tid = cur.lastrowid
     export()
     return {"ok": True, "id": tid, "due": due, "tag": tag,
@@ -404,7 +404,7 @@ def digest(today=None):
     today = today or date.today()
     rows = [r for r in _rows("open") if r.get("due")]
     if not rows:
-        return None
+        return "\n".join(_cal_pending_lines(today)) or None
     rows.sort(key=lambda r: _due_dt(r.get("due")))
     over, now_, soon = [], [], []
     for r in rows:
@@ -416,29 +416,103 @@ def digest(today=None):
         elif d <= today + timedelta(days=7):
             soon.append(r)
     if not (over or now_ or soon):
-        return None
+        return "\n".join(_cal_pending_lines(today)) or None   # 먼 일정이라도 캘린더 미동기화는 알린다
 
     def block(title, rs):
         if not rs:
             return []
-        out = [title]
+        out = ["", f"<b>{title}</b>"]
         for r in rs:
-            if title.startswith("오늘"):
+            if "오늘" in title:
                 # 오늘 블록에선 날짜가 뻔하니 시각만. 시각 없는 건 자리를 비워 세로줄을 맞춘다
-                head = r["due"][11:16] if "T" in r["due"] else "―――"
+                head = r["due"][11:16] if "T" in r["due"] else "  -  "
             else:
                 head = _due_label(r["due"], today)
-            out.append(f"  {head:<6} [{r.get('tag') or '기타'}] {r['content']}")
+            # 폰 글꼴은 폭이 제각각 — 시각은 <code> 고정폭에 둬야 세로줄이 맞는다
+            out.append(f"<code>{head:<6}</code> {_esc(r['content'])}")
         return out
 
-    lines = [f"📌 {today.strftime('%m/%d')} 할 일"]
-    lines += block(f"지난 것 {len(over)}", over)
-    lines += block(f"오늘 {len(now_)}", now_)
-    lines += block(f"이레 안 {len(soon)}", soon)
+    lines = [f"📌 <b>{today.month}/{today.day} 할 일</b>"]
+    lines += block(f"⚠️ 지난 것 {len(over)}", over)
+    lines += block(f"☀️ 오늘 {len(now_)}", now_)
+    lines += block(f"🗓 이레 안 {len(soon)}", soon)
     rest = len([r for r in _rows("open") if not r.get("due")])
     if rest:
-        lines.append(f"(마감 없는 것 {rest}건 — '할일' 로 전체 보기)")
+        lines += ["", f"<i>마감 없는 것 {rest}건 · '할일'로 전체</i>"]
+    lines += _cal_pending_lines(today)
     return "\n".join(lines)
+
+
+# ═══════════════════════════════════════════════════════════════
+#  구글 캘린더 대기 — 클로드가 캘린더에 못 올린 일정을 맡아 두는 곳 (2026-10-13)
+#   호윤은 클로드 계정을 둘 번갈아 쓰는데 구글 캘린더 도구가 없는 세션이 있다.
+#   그때 클로드가 `python todo_box.py --cal "일정 문장"` 으로 여기 넣으면 → 텔레그램 즉시 알림.
+#   아침 할 일 푸시에도 '미동기화 N건'이 붙는다. 캘린더 도구가 있는 세션에서 옮긴 뒤 `--synced 번호`.
+#   COMET 은 캘린더를 ICS 로 읽기만 하므로 직접 올리지는 못한다 — 알리는 데까지가 이 모듈 몫.
+# ═══════════════════════════════════════════════════════════════
+CAL_PENDING = "claude:cal_pending"
+CAL_SYNCED = "claude:cal_synced"
+
+
+def cal_pending():
+    return sorted([r for r in _rows("open") if r.get("src") == CAL_PENDING],
+                  key=lambda r: _due_dt(r.get("due")))
+
+
+def _when_full(due):
+    """'10/13(월) 09:00' — 폰 알림용. 마감 없으면 '날짜 없음'."""
+    if not due:
+        return "날짜 없음"
+    try:
+        d = date.fromisoformat(due[:10])
+    except ValueError:
+        return due
+    wd = "월화수목금토일"[d.weekday()]
+    return f"{d.month:02d}/{d.day:02d}({wd})" + (f" {due[11:16]}" if "T" in due else "")
+
+
+def _esc(t):
+    return (t or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _cal_pending_lines(today=None):
+    """아침 푸시(HTML)에 붙는 덩어리 — 빈 줄로 띄우고 날짜는 고정폭으로 맞춘다."""
+    rows = cal_pending()
+    if not rows:
+        return []
+    out = ["", f"📅 <b>캘린더 미동기화 {len(rows)}건</b>"]
+    out += [f"<code>{_when_full(r.get('due')):<15}</code> {_esc(r['content'])}" for r in rows]
+    return out
+
+
+def cal_add(text, notify_now=True):
+    """캘린더에 못 올린 일정을 접수하고 텔레그램으로 바로 알린다."""
+    res = add(text, src=CAL_PENDING)
+    if res.get("ok") and notify_now:
+        try:
+            import notify
+            n = len(cal_pending())
+            sent = notify.send(
+                f"📅 <b>캘린더 못 올림</b> → COMET 보관\n\n"
+                f"<b>{_esc(res.get('msg', '').split(' — ', 1)[-1])}</b>\n"
+                f"🕘 <code>{_when_full(res.get('due'))}</code>\n\n"
+                f"미동기화 <b>{n}건</b>\n"
+                f"<i>캘린더 되는 세션에서 옮기기</i>")
+            res["notify"] = sent.get("msg")
+        except Exception as e:                      # 알림 실패가 접수를 막지 않게
+            res["notify"] = f"전송 실패: {e}"
+    return res
+
+
+def cal_synced(iid):
+    """캘린더로 옮겼으면 대기 표시를 떼고 할일도 닫는다(일정은 이제 캘린더가 정본)."""
+    with _conn() as c:
+        r = c.execute("SELECT id, content FROM memory WHERE id=? AND src=?", (iid, CAL_PENDING)).fetchone()
+        if not r:
+            return {"ok": False, "msg": f"#{iid} 는 캘린더 대기 일정이 아니야."}
+        c.execute("UPDATE memory SET src=?, status='done', updated=? WHERE id=?", (CAL_SYNCED, _now(), iid))
+    export()
+    return {"ok": True, "msg": f"#{iid} 캘린더로 옮김 처리 — {r['content']}"}
 
 
 def speech(today=None):
@@ -582,4 +656,17 @@ def command(text):
 
 
 if __name__ == "__main__":       # 빠른 확인: python todo_box.py
-    print(listing("open"))
+    import sys
+    a = sys.argv[1:]
+    if a and a[0] == "--cal" and len(a) > 1:          # 클로드: 캘린더에 못 올린 일정 맡기기
+        quiet = "--no-notify" in a
+        r = cal_add(" ".join(x for x in a[1:] if x != "--no-notify"), notify_now=not quiet)
+        print(r["msg"]); print("텔레그램:", r.get("notify", "안 보냄"))
+    elif a and a[0] == "--pending":
+        print("\n".join(_cal_pending_lines()) or "캘린더 미동기화 일정 없음")
+    elif a and a[0] == "--synced" and len(a) > 1:
+        print(cal_synced(int(a[1].lstrip("#")))["msg"])
+    elif a:                                            # 그 밖의 말은 COMET 명령처럼: 할일 …
+        print(command(" ".join(a)) or "할일 명령이 아니야.")
+    else:
+        print(listing("open"))
