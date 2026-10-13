@@ -27,9 +27,11 @@ A.B.B.Y.S 프로젝트의 두뇌 레이어 (VOID의 형제).
    - 된 것: adb 무선 연결(페어링 끝) · 걸기 · 끊기 · 받았는지 감지(`answered()` = dumpsys telecom 의 mCalls 구간만) ·
      받아쓰기 Whisper turbo 1.1초 · 두뇌 1.7초(한 마디 약 $0.002) · 목소리 = 윈도우 Heami 0.1초(Edge 는 서버 403) ·
      **Phone Link 로 걸면 통화 소리 경로가 블루투스(PC)로 감** · 통화 장치(WDM-KS 77)로 **코멧 목소리 내보내기 성공**.
-   - 남은 것: ① 상대 목소리 받기 — WDM-KS 는 blocking read 미지원 → `Line` 의 콜백 입력으로 통화 중 재시험
+   - 10/13 폰 없이 고침(상세 `logs/2026-10-13-log.md` 오전): 통화 소리 기다리기가 Phone Link 통화를 1초 만에 포기하던 것 · WDM-KS 제외 ·
+     끊김 감지 = `in_call()`(mCallState 최대값 + telecom 목록). **가짜 통화 `phone/fake_call.py 고객센터|지인` 둘 다 통과.**
+   - 남은 것: ① 상대 목소리 받기 — 콜백 입력 코드는 됨, **폰 옆에서 실통화 확인만**(WDM-KS 78 입력 + 77 출력 동시)
      ② 걸기를 adb 대신 **Phone Link**(`phonelink_dial.ps1` + UI 자동화 `ButtonCall`)로 바꾸기 — adb 로 걸면 소리가 폰 수화기에 남음
-     ③ Phone Link 로 건 통화는 `call_state()`(telephony.registry)가 0 으로 나옴 — 끊김 감지를 Phone Link 창/telecom 으로
+     ③ 끊김 감지 `in_call()` 코드는 됨 — Phone Link 통화에서 True 로 나오는지 실통화 확인만
      ④ 엄마 폰(010-0000-0000 · 호윤 손에 있음)으로 시험 → 아이폰(010-0000-0000) 풀린 뒤 본인 연결(3자 통화는 미확인 · 지금은 PC 마이크 중계)
    - 함정: 폰에서 「Windows와 연결」이 꺼지면 Phone Link 가 통화를 못 받음(창에 「꺼져 있습니다」) · Zoom 이 CALL 인텐트를 가로채
      「앱 고르기」 창에서 멈춤 → telecom 컴포넌트를 `-n` 으로 지정 · 기본 전화앱 = LG U+ 익시오.

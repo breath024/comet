@@ -71,25 +71,39 @@ def dtmf(digits):
         time.sleep(0.25)
 
 
-def answered():
-    """상대가 받았는지 — 지금 통화 목록(CallsManager 의 mCalls: ~ mCallAudioManager: 사이)만 본다.
-    dumpsys telecom 아래쪽엔 지난 통화(Call TC@n)가 ACTIVE 로 남아 있어 전체를 보면 헛것을 잡는다.
-    ACTIVE = 받음, DIALING 등 = 아직, 목록이 비었거나 모양이 다르면 None."""
+def _telecom_states():
+    """지금 통화 목록(CallsManager 의 mCalls: ~ mCallAudioManager: 사이)의 통화 상태들. 모양이 다르면 None.
+    dumpsys telecom 아래쪽엔 지난 통화(Call TC@n)가 ACTIVE 로 남아 있어 전체를 보면 헛것을 잡는다."""
     out = adb("shell", "dumpsys", "telecom")
     m = re.search(r"mCalls:(.*?)mCallAudioManager:", out, re.S)
-    if not m or not m.group(1).strip():
+    if not m:
         return None
-    states = re.findall(r"\b(ACTIVE|DIALING|CONNECTING|SELECT_PHONE_ACCOUNT|RINGING|ON_HOLD|DISCONNECTING|DISCONNECTED|NEW)\b",
-                        m.group(1))
+    return re.findall(r"\b(ACTIVE|DIALING|CONNECTING|SELECT_PHONE_ACCOUNT|RINGING|ON_HOLD|DISCONNECTING|DISCONNECTED|NEW)\b",
+                      m.group(1))
+
+
+def answered():
+    """상대가 받았는지 — ACTIVE = 받음, DIALING 등 = 아직, 목록이 비었거나 모양이 다르면 None."""
+    states = _telecom_states()
     if not states:
         return None
     return "ACTIVE" in states
 
 
 def call_state():
-    """0 = 통화 없음, 1 = 수신 울림, 2 = 통화 중(발신 포함)"""
-    m = re.findall(r"mCallState=(\d)", adb("shell", "dumpsys", "telephony.registry"))
-    return int(m[0]) if m else -1
+    """0 = 통화 없음, 1 = 수신 울림, 2 = 통화 중(발신 포함), -1 = 못 읽음.
+    값이 여러 줄(심 슬롯별)이면 가장 큰 값 — Phone Link 로 건 통화가 0 으로 나온 건(10/12) 첫 줄만 봐서일 수 있다(추정)."""
+    m = [int(x) for x in re.findall(r"mCallState=(\d)", adb("shell", "dumpsys", "telephony.registry"))]
+    return max(m) if m else -1
+
+
+def in_call():
+    """통화가 살아 있는지. telephony.registry 가 0 이어도 telecom 통화 목록에 살아 있는 통화가 있으면 통화 중 —
+    Phone Link 로 건 통화는 mCallState 가 0 으로 나왔다(10/12 실측). 끊김 감지는 전부 이걸로 본다."""
+    if call_state() in (1, 2):
+        return True
+    states = _telecom_states()
+    return bool(states) and any(s not in ("DISCONNECTED", "DISCONNECTING") for s in states)
 
 
 # ── 소리 장치 ─────────────────────────────────────────
@@ -116,14 +130,18 @@ def hfp_devices(rescan=False, allow_wdmks=True):
 
 
 def wait_call_audio(timeout=20):
-    """전화를 건 뒤 통화 소리 장치(WASAPI/MME)가 깨어날 때까지 기다린다."""
+    """전화를 건 뒤 통화 소리 장치가 깨어날 때까지 기다린다. WASAPI/MME 장치가 생기면 그쪽.
+    Phone Link 통화 때는 WDM-KS(77 출력 · 78 입력)만 보였다(10/12 실측) → 3초 지나도 안 생기면 통화 중일 때 WDM-KS 를 받는다.
+    걸자마자는 통화 목록에 아직 안 잡힐 수 있어 처음 3초는 끊김으로 안 본다."""
     t0 = time.time()
     while time.time() - t0 < timeout:
-        i, o = hfp_devices(rescan=True, allow_wdmks=False)
+        late = time.time() - t0 > 3
+        live = in_call() if late else True
+        if late and not live:
+            return None, None
+        i, o = hfp_devices(rescan=True, allow_wdmks=late)
         if i is not None and o is not None:
             return i, o
-        if call_state() == 0:
-            return None, None
         time.sleep(1)
     return None, None
 
@@ -133,15 +151,22 @@ class Line:
 
     def __init__(self, in_dev, out_dev):
         self.in_dev, self.out_dev = in_dev, out_dev
-        self.sr_in = int(sd.query_devices(in_dev)["default_samplerate"])
-        self.sr_out = int(sd.query_devices(out_dev)["default_samplerate"])
+        self._setup(int(sd.query_devices(in_dev)["default_samplerate"]),
+                    int(sd.query_devices(out_dev)["default_samplerate"]))
+        # 콜백 입력 — WDM-KS 는 read() 로 꺼내 읽기(blocking)를 못 한다(10/12 「Blocking API not supported」)
+        kw = dict(device=in_dev, channels=1, samplerate=self.sr_in, dtype="float32", callback=self._cb)
+        try:
+            self.stream = sd.InputStream(blocksize=int(self.sr_in * 0.03), **kw)
+        except sd.PortAudioError as e:       # 블록 크기를 장치가 못 받으면 장치가 정하는 크기로(추정 대비)
+            log("입력 장치 블록 크기 거부 — 장치 기본으로:", e)
+            self.stream = sd.InputStream(blocksize=0, **kw)
+
+    def _setup(self, sr_in, sr_out):
+        self.sr_in, self.sr_out = sr_in, sr_out
         self.utter = queue.Queue()
         self.speaking = threading.Event()
         self.heard_voice = threading.Event()
         self._buf, self._last_voice, self._noise = [], 0.0, 0.004
-        self.stream = sd.InputStream(device=in_dev, channels=1, samplerate=self.sr_in,
-                                     dtype="float32", blocksize=int(self.sr_in * 0.03),
-                                     callback=self._cb)
 
     def _cb(self, data, frames, t, status):
         if self.speaking.is_set():          # 내가 말하는 동안 들리는 건 버린다(되울림)
@@ -307,12 +332,27 @@ def bridge(line):
                      channels=1, dtype="float32", callback=passthru)
     with up, down:
         log("본인 연결 — PC 마이크로 말하면 통화로 들어갑니다. 통화가 끝나면 자동으로 멈춥니다.")
-        while call_state() == 2:
+        while in_call():
             time.sleep(1)
 
 
+class Phone:
+    """진짜 전화(S26+ · adb · 블루투스). 가짜 통화 시험(fake_call.py)은 같은 이름의 메서드를 가진 물건으로 바꿔 끼운다."""
+    devices = staticmethod(hfp_devices)
+    dial = staticmethod(dial)
+    wait_audio = staticmethod(wait_call_audio)
+    in_call = staticmethod(in_call)
+    answered = staticmethod(answered)
+    hangup = staticmethod(hangup)
+    dtmf = staticmethod(dtmf)
+    notify = staticmethod(notify_owner)
+    bridge = staticmethod(bridge)
+    Line = Line
+
+
 # ── 통화 ─────────────────────────────────────────────
-def run(number, goal, max_turns, test):
+def run(number, goal, max_turns, test, phone=None):
+    phone = phone or Phone()
     os.makedirs(LOG_DIR, exist_ok=True)
     stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
     transcript = []
@@ -321,35 +361,35 @@ def run(number, goal, max_turns, test):
         line_ = f"[{time.strftime('%H:%M:%S')}] {who}: {text}"
         transcript.append(line_); log(f"{who}: {text}")
 
-    in_dev, out_dev = hfp_devices()
+    in_dev, out_dev = phone.devices()
     if in_dev is None or out_dev is None:
         sys.exit("S26+ 핸즈프리 소리 장치가 없어요 — 블루투스 연결 확인")
-    if call_state() != 0:
+    if phone.in_call():
         sys.exit("이미 통화 중이라 걸지 않았어요")
     log("받아쓰기 모델 올리는 중…"); ears = Ears()
     brain = Brain(goal + (" (시험 통화 — 시험 전화라고 밝히고 두세 마디 나눈 뒤 끊는다)" if test else ""))
 
     note("시스템", f"{number} 로 발신 (업무번호 {WORK_NUMBER}) · 용건: {goal}")
-    dial(number)
-    in_dev, out_dev = wait_call_audio()
+    phone.dial(number)
+    in_dev, out_dev = phone.wait_audio()
     if in_dev is None:
         note("시스템", "통화 소리가 PC 로 안 넘어옴(핸즈프리 장치가 안 깨어남) — 끊음")
-        hangup()
+        phone.hangup()
         open(os.path.join(LOG_DIR, f"{stamp}_{number}.log"), "w", encoding="utf-8").write("\n".join(transcript) + "\n")
         return
-    d_in, d_out = sd.query_devices(in_dev), sd.query_devices(out_dev)
-    note("시스템", f"통화 소리 장치: 입력 {in_dev}({d_in['default_samplerate']:.0f}Hz) · 출력 {out_dev}({d_out['default_samplerate']:.0f}Hz)")
-    line = Line(in_dev, out_dev); line.start()
+    line = phone.Line(in_dev, out_dev)
+    note("시스템", f"통화 소리 장치: 입력 {in_dev}({line.sr_in}Hz) · 출력 {out_dev}({line.sr_out}Hz)")
+    line.start()
 
     handoff = False
     try:
         t0 = time.time()
         while True:                                 # 폰이 「연결됨(ACTIVE)」이 될 때까지 — 컬러링을 목소리로 착각하지 않게
-            if call_state() == 0:
+            if not phone.in_call():
                 note("시스템", "상대가 안 받거나 통화가 끊김"); return
             if time.time() - t0 > ANSWER_TIMEOUT:
-                note("시스템", "응답 없음 — 끊음"); hangup(); return
-            a = answered()
+                note("시스템", "응답 없음 — 끊음"); phone.hangup(); return
+            a = phone.answered()
             if a != getattr(run, "_last_a", "x"):
                 note("시스템", f"연결 감지 값: {a}"); run._last_a = a
             if a or (a is None and line.heard_voice.is_set()):
@@ -364,7 +404,7 @@ def run(number, goal, max_turns, test):
                 heard = ears.text(line.utter.get(timeout=12), line.sr_in)
             except queue.Empty:
                 heard = "(몇 초째 말이 없음)"
-            if call_state() == 0:
+            if not phone.in_call():
                 note("시스템", "상대가 끊음"); break
             note("상대", heard)
             t1 = time.time()
@@ -377,20 +417,20 @@ def run(number, goal, max_turns, test):
                 line.play(pcm)
             for tg in tags:
                 if tg.startswith("번호:"):
-                    note("코멧", f"ARS {tg[3:]} 누름"); dtmf(tg[3:])
+                    note("코멧", f"ARS {tg[3:]} 누름"); phone.dtmf(tg[3:])
             if "본인연결" in tags:
                 handoff = True; break
             if "끊기" in tags:
-                time.sleep(0.5); hangup(); break
+                time.sleep(0.5); phone.hangup(); break
         else:
             note("시스템", f"{max_turns}번 넘게 이어져 본인 연결로 넘김"); handoff = True
 
-        if handoff and call_state() == 2:
-            notify_owner(f"{number} · 용건: {goal}\n" + "\n".join(transcript[-4:]))
+        if handoff and phone.in_call():
+            phone.notify(f"{number} · 용건: {goal}\n" + "\n".join(transcript[-4:]))
             if test:
-                note("시스템", "시험 모드 — 본인 연결 대신 끊음"); hangup()
+                note("시스템", "시험 모드 — 본인 연결 대신 끊음"); phone.hangup()
             else:
-                bridge(line)
+                phone.bridge(line)
     finally:
         line.stop()
         note("시스템", f"API 비용 약 ${brain.cost_usd():.4f} · 토큰 {brain.usage}")
