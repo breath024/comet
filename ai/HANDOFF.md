@@ -29,7 +29,7 @@ A.B.B.Y.S 프로젝트의 두뇌 레이어 (VOID의 형제).
      **Phone Link 로 걸면 통화 소리 경로가 블루투스(PC)로 감** · 통화 장치(WDM-KS 77)로 **코멧 목소리 내보내기 성공**.
    - 10/13 폰 없이 고침(상세 `logs/2026-10-13-log.md` 오전): 통화 소리 기다리기가 Phone Link 통화를 1초 만에 포기하던 것 · WDM-KS 제외 ·
      끊김 감지 = `in_call()`(mCallState 최대값 + telecom 목록). **가짜 통화 `phone/fake_call.py 고객센터|지인` 둘 다 통과.**
-   - 집에서 첫 시험: 폰 블루투스 · 「Windows와 연결」 켜고 `python phone/call_agent.py <엄마 폰 번호> --goal "시험 통화…" --test`(엄마 폰)
+   - 집에서 첫 시험: 폰 블루투스 · 「Windows와 연결」 켜고 `python phone/call_agent.py <아이폰 번호> --goal "시험 통화…" --test` 를 **01000000000(호윤 아이폰)** 으로(10/13 호윤 지정) — 아이폰 PUK 잠김(10/12)이 풀려 있어야 받음
    - 남은 것: ① 상대 목소리 받기 — 콜백 입력 코드는 됨, **폰 옆에서 실통화 확인만**(WDM-KS 78 입력 + 77 출력 동시)
      ② 걸기 · 끊기 · ARS 를 **휴대폰과 연결**로 — 코드는 됨(10/13, 기본값). 실통화 뒤 `phone/logs/<시각>_phonelink_ui.txt` 를 보고
         끊기 · 키패드 버튼 이름을 `_is_end_button` · `dtmf_phonelink` 에 박기(지금은 이름 추정 + adb 대비)
