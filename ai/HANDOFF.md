@@ -29,8 +29,10 @@ A.B.B.Y.S 프로젝트의 두뇌 레이어 (VOID의 형제).
      **Phone Link 로 걸면 통화 소리 경로가 블루투스(PC)로 감** · 통화 장치(WDM-KS 77)로 **코멧 목소리 내보내기 성공**.
    - 10/13 폰 없이 고침(상세 `logs/2026-10-13-log.md` 오전): 통화 소리 기다리기가 Phone Link 통화를 1초 만에 포기하던 것 · WDM-KS 제외 ·
      끊김 감지 = `in_call()`(mCallState 최대값 + telecom 목록). **가짜 통화 `phone/fake_call.py 고객센터|지인` 둘 다 통과.**
+   - 집에서 첫 시험: 폰 블루투스 · 「Windows와 연결」 켜고 `python phone/call_agent.py <엄마 폰 번호> --goal "시험 통화…" --test`(엄마 폰)
    - 남은 것: ① 상대 목소리 받기 — 콜백 입력 코드는 됨, **폰 옆에서 실통화 확인만**(WDM-KS 78 입력 + 77 출력 동시)
-     ② 걸기를 adb 대신 **Phone Link**(`phonelink_dial.ps1` + UI 자동화 `ButtonCall`)로 바꾸기 — adb 로 걸면 소리가 폰 수화기에 남음
+     ② 걸기 · 끊기 · ARS 를 **휴대폰과 연결**로 — 코드는 됨(10/13, 기본값). 실통화 뒤 `phone/logs/<시각>_phonelink_ui.txt` 를 보고
+        끊기 · 키패드 버튼 이름을 `_is_end_button` · `dtmf_phonelink` 에 박기(지금은 이름 추정 + adb 대비)
      ③ 끊김 감지 `in_call()` 코드는 됨 — Phone Link 통화에서 True 로 나오는지 실통화 확인만
      ④ 엄마 폰(010-0000-0000 · 호윤 손에 있음)으로 시험 → 아이폰(010-0000-0000) 풀린 뒤 본인 연결(3자 통화는 미확인 · 지금은 PC 마이크 중계)
    - 함정: 폰에서 「Windows와 연결」이 꺼지면 Phone Link 가 통화를 못 받음(창에 「꺼져 있습니다」) · Zoom 이 CALL 인텐트를 가로채

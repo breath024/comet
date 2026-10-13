@@ -2,10 +2,12 @@
 
 호윤이 직접 지시한 번호 · 용건으로만 건다. 첫마디에 AI 비서라고 밝힌다(사람인 척 금지).
 경로: PC ↔ S26+ 블루투스 핸즈프리(HFP). 상대 목소리 = HFP 입력 장치, 코멧 목소리 = HFP 출력 장치.
-걸기 · 끊기 · ARS 번호 = adb(무선 디버깅).
+걸기 · 끊기 · ARS 번호 = 휴대폰과 연결(Phone Link) 화면 자동화 — adb 로 걸면 소리가 폰 수화기에 남는다.
+통화 상태(받음 · 끊김) = adb(무선 디버깅).
 본인확인 · 결제 · 담당자 연결 등 호윤이 필요한 순간 → 알림 → 호윤 PC 마이크/스피커를 통화에 잇는다(중계).
 
-    python call_agent.py 01012345678 --goal "용건" [--max-turns 20] [--test]
+    python call_agent.py 01012345678 --goal "용건" [--max-turns 20] [--test] [--dial adb]
+    폰 없이 대화 흐름만: python fake_call.py [고객센터|지인]
 
 키는 Desktop\\api\\api.txt 에서 읽기만(환경변수 금지 — 메모리 feedback_api_key_never_in_env).
 """
@@ -104,6 +106,121 @@ def in_call():
         return True
     states = _telecom_states()
     return bool(states) and any(s not in ("DISCONNECTED", "DISCONNECTING") for s in states)
+
+
+# ── 휴대폰과 연결(Phone Link) ─────────────────────────
+# 이렇게 걸어야 통화 소리가 블루투스로 PC 에 온다(10/12 실측: adb 로 걸면 폰 수화기에 남음). 상태 읽기는 계속 adb.
+PL_DIAL_PS = os.path.join(HERE, "phonelink_dial.ps1")
+_pl_keypad_open = False
+
+
+def _pl_windows():
+    """휴대폰과 연결(PhoneExperienceHost) 프로세스의 최상위 창들 — 통화 중 작은 창이 따로 뜰 수 있어 이름 말고 프로세스로 찾는다."""
+    import uiautomation as auto
+    out = subprocess.run(["tasklist", "/fo", "csv", "/nh", "/fi", "IMAGENAME eq PhoneExperienceHost.exe"],
+                         capture_output=True, text=True, encoding="cp949", errors="replace").stdout
+    pids = {int(r.split(",")[1].strip('"')) for r in out.splitlines() if r.startswith('"PhoneExperienceHost')}
+    return [c for c in auto.GetRootControl().GetChildren() if c.ProcessId in pids]
+
+
+def _pl_find(pred, kind="ButtonControl", depth=22):
+    """휴대폰과 연결 창들에서 pred 에 맞는 첫 요소."""
+    def walk(c, d):
+        if d > depth:
+            return None
+        for ch in c.GetChildren():
+            if ch.ControlTypeName == kind and pred(ch):
+                return ch
+            r = walk(ch, d + 1)
+            if r:
+                return r
+        return None
+    for w in _pl_windows():
+        r = walk(w, 0)
+        if r:
+            return r
+    return None
+
+
+def dump_phonelink_ui(tag):
+    """통화 중 화면(끊기 · 키패드) 버튼 이름을 아직 못 봤다(10/13) — 받자마자 창 전체를 파일로 남겨 다음에 이름을 박는다."""
+    import uiautomation as auto
+    with auto.UIAutomationInitializerInThread():
+        lines = []
+        def walk(c, d):
+            if d > 22:
+                return
+            for ch in c.GetChildren():
+                lines.append(f"{'  ' * min(d, 8)}{ch.ControlTypeName}  {(ch.Name or '')[:60]!r}  id={ch.AutomationId[:40]}")
+                walk(ch, d + 1)
+        for w in _pl_windows():
+            lines.append(f"[창] {w.Name!r} {w.BoundingRectangle}")
+            walk(w, 0)
+    path = os.path.join(LOG_DIR, f"{tag}_phonelink_ui.txt")
+    open(path, "w", encoding="utf-8").write("\n".join(lines) + "\n")
+    return path
+
+
+def dial_phonelink(number):
+    """tel: 로 번호를 채우고(phonelink_dial.ps1 — PC tel 기본앱이 Lync 라서 앱을 콕 집음) 다이얼 통화 버튼(ButtonCall, 10/12 확인)을 누른다.
+    버튼 이름에 적힌 번호(「통화 전화 번호 0 1 0 - …」)가 걸 번호와 다르면 안 누른다. 걸었으면 True, 못 걸면 이유."""
+    global _pl_keypad_open
+    _pl_keypad_open = False
+    r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", PL_DIAL_PS, "-Number", number],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
+    if "launched=True" not in r.stdout:
+        return f"휴대폰과 연결에 번호를 못 넘김: {r.stdout.strip()} {r.stderr.strip()[:200]}"
+    shown = None
+    t0 = time.time()
+    while time.time() - t0 < 8:                   # 번호 칸이 늦게 바뀔 수 있어 맞을 때까지 기다린다
+        b = _pl_find(lambda c: c.AutomationId == "ButtonCall")
+        if b:
+            shown = re.sub(r"\D", "", b.Name)
+            if shown == number:
+                b.GetInvokePattern().Invoke()
+                return True
+        time.sleep(0.5)
+    if shown is not None:
+        return f"통화 버튼의 번호({shown})가 걸 번호({number})와 달라 안 누름"
+    if _pl_find(lambda c: "꺼져 있습니다" in (c.Name or ""), kind="TextControl"):
+        return "폰에서 「Windows와 연결」이 꺼져 있음(휴대폰과 연결 창 문구)"
+    return "통화 버튼(ButtonCall)을 못 찾음 — 폰 블루투스 연결 확인"
+
+
+def _is_end_button(c):
+    # 「통화」만 든 버튼은 안 누른다 — 소리를 휴대폰으로 넘기는 버튼 같은 게 있을 수 있다(추정)
+    return bool(re.search(r"통화\s*종료|끊기|End call|Hang ?up", c.Name or "", re.I)
+                or re.search(r"hang|endcall|end_call", c.AutomationId, re.I))
+
+
+def hangup_phonelink():
+    """폰에서 끊기(adb ENDCALL) → 1.5초 뒤에도 통화 중이면 휴대폰과 연결 창의 끊기 버튼(이름 아직 못 봄 — 위 _is_end_button 으로 찾음)."""
+    hangup()
+    time.sleep(1.5)
+    if not in_call():
+        return
+    b = _pl_find(_is_end_button)
+    if b:
+        log("휴대폰과 연결 끊기 버튼:", b.Name); b.GetInvokePattern().Invoke()
+    else:
+        log("끊기 버튼 못 찾음 — 통화가 남아 있을 수 있음")
+
+
+def dtmf_phonelink(digits):
+    """통화 창 키패드로 ARS 번호를 누른다. 키패드 열기 버튼(키패드 · Keypad · 다이얼 패드 — 이름 아직 못 봄)을 찾아야만
+    Button0~9 · ButtonStar · ButtonPound 를 누른다 — 안 그러면 통화 전 다이얼 칸에 숫자만 찍힐 수 있다. 못 찾으면 폰 쪽(adb)."""
+    global _pl_keypad_open
+    if not _pl_keypad_open:
+        k = _pl_find(lambda c: bool(re.search(r"키패드|다이얼\s*패드|Keypad|Dial ?pad", c.Name or "", re.I)))
+        if not k:
+            log("통화 창 키패드 못 찾음 — adb 로 누름"); dtmf(digits); return
+        k.GetInvokePattern().Invoke(); _pl_keypad_open = True; time.sleep(0.4)
+    for ch in digits:
+        aid = {"*": "ButtonStar", "#": "ButtonPound"}.get(ch, f"Button{ch}")
+        b = _pl_find(lambda c: c.AutomationId == aid)
+        if not b:
+            log(f"키패드 {ch} 못 찾음 — adb 로 누름"); dtmf(ch); continue
+        b.GetInvokePattern().Invoke(); time.sleep(0.25)
 
 
 # ── 소리 장치 ─────────────────────────────────────────
@@ -337,7 +454,8 @@ def bridge(line):
 
 
 class Phone:
-    """진짜 전화(S26+ · adb · 블루투스). 가짜 통화 시험(fake_call.py)은 같은 이름의 메서드를 가진 물건으로 바꿔 끼운다."""
+    """adb 로 거는 진짜 전화 — 소리가 폰 수화기에 남아 진단용(--dial adb).
+    가짜 통화 시험(fake_call.py)은 같은 이름의 메서드를 가진 물건으로 바꿔 끼운다."""
     devices = staticmethod(hfp_devices)
     dial = staticmethod(dial)
     wait_audio = staticmethod(wait_call_audio)
@@ -350,9 +468,17 @@ class Phone:
     Line = Line
 
 
+class PhoneLinkPhone(Phone):
+    """기본 — 휴대폰과 연결로 걸고 · 끊고 · 누른다. 통화 상태는 adb."""
+    dial = staticmethod(dial_phonelink)
+    hangup = staticmethod(hangup_phonelink)
+    dtmf = staticmethod(dtmf_phonelink)
+    dump_ui = staticmethod(dump_phonelink_ui)
+
+
 # ── 통화 ─────────────────────────────────────────────
 def run(number, goal, max_turns, test, phone=None):
-    phone = phone or Phone()
+    phone = phone or PhoneLinkPhone()
     os.makedirs(LOG_DIR, exist_ok=True)
     stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
     transcript = []
@@ -360,6 +486,9 @@ def run(number, goal, max_turns, test, phone=None):
     def note(who, text):
         line_ = f"[{time.strftime('%H:%M:%S')}] {who}: {text}"
         transcript.append(line_); log(f"{who}: {text}")
+
+    def save():
+        open(os.path.join(LOG_DIR, f"{stamp}_{number}.log"), "w", encoding="utf-8").write("\n".join(transcript) + "\n")
 
     in_dev, out_dev = phone.devices()
     if in_dev is None or out_dev is None:
@@ -370,12 +499,13 @@ def run(number, goal, max_turns, test, phone=None):
     brain = Brain(goal + (" (시험 통화 — 시험 전화라고 밝히고 두세 마디 나눈 뒤 끊는다)" if test else ""))
 
     note("시스템", f"{number} 로 발신 (업무번호 {WORK_NUMBER}) · 용건: {goal}")
-    phone.dial(number)
+    r = phone.dial(number)
+    if r not in (None, True):                       # adb 로 거는 dial 은 None
+        note("시스템", f"못 걺 — {r}"); save(); return
     in_dev, out_dev = phone.wait_audio()
     if in_dev is None:
         note("시스템", "통화 소리가 PC 로 안 넘어옴(핸즈프리 장치가 안 깨어남) — 끊음")
-        phone.hangup()
-        open(os.path.join(LOG_DIR, f"{stamp}_{number}.log"), "w", encoding="utf-8").write("\n".join(transcript) + "\n")
+        phone.hangup(); save()
         return
     line = phone.Line(in_dev, out_dev)
     note("시스템", f"통화 소리 장치: 입력 {in_dev}({line.sr_in}Hz) · 출력 {out_dev}({line.sr_out}Hz)")
@@ -396,6 +526,9 @@ def run(number, goal, max_turns, test, phone=None):
                 break
             time.sleep(0.4)
         note("시스템", "상대가 받음")
+        if hasattr(phone, "dump_ui"):               # 통화 중 화면 버튼 이름 남기기 — 대화를 안 막게 따로
+            threading.Thread(target=lambda: note("시스템", f"통화 창 버튼 기록: {phone.dump_ui(stamp)}"),
+                             daemon=True).start()
         while not line.utter.empty():               # 받기 전에 쌓인 연결음 조각은 버린다
             line.utter.get_nowait()
 
@@ -434,9 +567,8 @@ def run(number, goal, max_turns, test, phone=None):
     finally:
         line.stop()
         note("시스템", f"API 비용 약 ${brain.cost_usd():.4f} · 토큰 {brain.usage}")
-        path = os.path.join(LOG_DIR, f"{stamp}_{number}.log")
-        open(path, "w", encoding="utf-8").write("\n".join(transcript) + "\n")
-        log("기록:", path)
+        save()
+        log("기록:", os.path.join(LOG_DIR, f"{stamp}_{number}.log"))
 
 
 def main():
@@ -445,8 +577,11 @@ def main():
     ap.add_argument("--goal", default="시험 통화")
     ap.add_argument("--max-turns", type=int, default=20)
     ap.add_argument("--test", action="store_true")
+    ap.add_argument("--dial", choices=["phonelink", "adb"], default="phonelink",
+                    help="adb = 소리가 폰 수화기에 남는 진단용")
     a = ap.parse_args()
-    run(re.sub(r"\D", "", a.number), a.goal, a.max_turns, a.test)
+    run(re.sub(r"\D", "", a.number), a.goal, a.max_turns, a.test,
+        phone=PhoneLinkPhone() if a.dial == "phonelink" else Phone())
 
 
 if __name__ == "__main__":
