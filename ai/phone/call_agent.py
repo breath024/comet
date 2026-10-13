@@ -12,6 +12,7 @@
 import argparse
 import asyncio
 import datetime as dt
+import json
 import os
 import queue
 import re
@@ -31,7 +32,11 @@ KEY_FILE = r"C:\Users\USER\Desktop\api\api.txt"
 MODEL = "claude-sonnet-5-5"
 VOICE = "ko-KR-SunHiNeural"
 OWNER = "정호윤"
-WORK_NUMBER = "010-0000-0000"
+try:                   # 진짜 번호는 git 에 안 올리는 numbers.json 에만(공개 저장소) — {"work": 업무번호, "test": 시험 받을 번호}
+    with open(os.path.join(HERE, "numbers.json"), encoding="utf-8") as _f:
+        WORK_NUMBER = json.load(_f).get("work", "010-0000-0000")
+except (OSError, ValueError, AttributeError):
+    WORK_NUMBER = "010-0000-0000"
 LOG_DIR = os.path.join(HERE, "logs")
 
 SILENCE_SEC = 0.9      # 이만큼 조용하면 상대 말이 끝난 것
