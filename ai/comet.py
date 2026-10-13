@@ -320,6 +320,10 @@ HELP_TEXT = """COMET 기능 목록
   "어떻게 생각해 / 뭐가 나아 / ~해야 할까" 같은 의견 질문도 자동으로 회의
   회의 결과 — 지난 회의 전문 · 로컬 회의 <주제> — 로컬 모델끼리 (몇 분)
 
+[전화 비서]  (모델 안 거침)
+  전화 점검 — 폰 무선 연결 · 블루투스 통화 장치 · 휴대폰과 연결 준비 상태
+  전화 시험 — 준비 다 되면 호윤 아이폰으로 시험 전화(뒤에서, 끝나면 텔레그램 요약 · 텔레그램에선 안 걺)
+
 [화면·이미지]
   화면 봐줘 / 이 이미지 뭐야 — gemma4 vision (vision.py)
 
@@ -1053,6 +1057,12 @@ class Comet:
             self.history.add("assistant", ans)
             self.history.save()
             return ans
+        # ── 전화 비서 점검 · 시험 — phone_cmd.py (모델 안 거침, 시험 전화는 텔레그램에선 막음) ──
+        if t.replace(" ", "").startswith(("전화", "시험전화")):
+            import phone_cmd
+            ans = phone_cmd.command(t)
+            if ans is not None:          # None = "전화번호 뭐야" 같은 일반 말 → 대화로 흘림
+                return ans
         # ── 이슈 접수함 (쓰다가 이상한 것 한 줄로 던져두기 → 고쳐지면 닫기) — issue_box.py ──
         if t.strip().startswith("이슈"):
             import issue_box
