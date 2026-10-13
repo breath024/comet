@@ -324,6 +324,14 @@ HELP_TEXT = """COMET 기능 목록
   전화 점검 — 폰 무선 연결 · 블루투스 통화 장치 · 휴대폰과 연결 준비 상태
   전화 시험 — 준비 다 되면 호윤 아이폰으로 시험 전화(뒤에서, 끝나면 텔레그램 요약 · 텔레그램에선 안 걺)
 
+[자가 업그레이드 (클로드가 고치고 아스트라가 검토)]
+  업그레이드 / 업그레이드 상태 — 지금 도는 것 · 제안 목록 (매일 13시 이후 알아서 찾아 제안)
+  업그레이드 제안 — 지금 고칠 거리 찾기 (1~2분, 배너 · 텔레그램)
+  업그레이드 1 / 업그레이드 요청 <내용> — 떼어 둔 복사본에서 고치기 시작 (끝나면 알림)
+  업그레이드 보기 — 바뀐 것 · 검토 · 시험 결과
+  업그레이드 적용 — 진짜 코드에 반영(커밋) → 데몬 재시작은 직접 · 업그레이드 버려 / 다시 / 되돌리기
+  시작 · 적용 · 되돌리기는 텔레그램에선 안 됨(PC 앞 · 폰 웹)
+
 [화면·이미지]
   화면 봐줘 / 이 이미지 뭐야 — gemma4 vision (vision.py)
 
@@ -1062,6 +1070,12 @@ class Comet:
             import phone_cmd
             ans = phone_cmd.command(t)
             if ans is not None:          # None = "전화번호 뭐야" 같은 일반 말 → 대화로 흘림
+                return ans
+        # ── 자가 업그레이드 — upgrade.py (시작 · 적용 · 되돌리기는 텔레그램에선 막음) ──
+        if t.startswith("업그레이드"):
+            import upgrade
+            ans = upgrade.command(t, remote=remote_guard.active())
+            if ans is not None:          # None = "업그레이드 어떻게 해?" 같은 일반 말 → 대화로 흘림
                 return ans
         # ── 이슈 접수함 (쓰다가 이상한 것 한 줄로 던져두기 → 고쳐지면 닫기) — issue_box.py ──
         if t.strip().startswith("이슈"):

@@ -36,6 +36,9 @@ DEFAULTS = {
     "talk":      {"enabled": True, "gap": 0.45},
     # telegram: 텔레그램으로 물으면 답한다(호윤 대화방만). 호윤이 만들어 달라고 해서 처음부터 켜 둔다(10/07)
     "telegram":  {"enabled": True},
+    # upgrade: 하루 한 번 hour 시 이후 고칠 거리를 찾아 제안 + 막힌 업그레이드 다시 시도. 로직은 upgrade.py
+    #   호윤이 「스스로 찾아서 제안」을 골라서(10/13) 처음부터 켜 둔다. 반영은 호윤 「업그레이드 적용」 때만.
+    "upgrade":   {"enabled": True, "hour": 13, "check_sec": 1800, "last_date": ""},
 }
 
 
@@ -835,6 +838,48 @@ class TelegramMode(_Mode):
                 ctypes.WinDLL("kernel32").CloseHandle(ctypes.c_void_p(mutex))
 
 
+# ═══════════════════════════════════════════════════════════════
+#  upgrade — 코멧 자가 업그레이드 제안 (upgrade.py)
+#   하루 1회 hour 시 이후: 열린 이슈 · 반복 오류 · HANDOFF 를 보고 고칠 거리 제안(배너 + 텔레그램).
+#   점검마다: 모델이 막혀 기다리는 업그레이드 다시 · 중간에 꺼진 업그레이드 이어서.
+#   데몬 + 콘솔이 같이 떠도 한 COMET 만(이름 있는 뮤텍스).
+# ═══════════════════════════════════════════════════════════════
+class UpgradeMode(_Mode):
+    name = "upgrade"
+    desc = "하루 한 번 고칠 거리를 찾아 업그레이드 제안 · 막힌 업그레이드 다시 시도"
+    MUTEX = "Local\\COMET_UPGRADE"
+
+    def __init__(self, cfg, log, save_fn=None):
+        super().__init__(cfg, log)
+        self.save_fn = save_fn
+        self._mutex = None
+
+    def _run(self):
+        from datetime import datetime
+        if self._mutex is None:                  # 껐다 켜도 이 프로세스가 잡은 건 그대로 쓴다
+            h = _named_mutex(self.MUTEX)
+            if h is False:
+                self.log("[upgrade] 다른 COMET 이 맡고 있음 — 여기선 안 돎")
+                return
+            self._mutex = h
+        import upgrade
+        hour = int(self.cfg.get("hour", 13))
+        check = max(300, int(self.cfg.get("check_sec", 1800)))
+        self.log(f"[upgrade] 가동 — 매일 {hour}시 이후 업그레이드 제안 · {check // 60}분마다 막힌 것 다시")
+        while not self._stop.wait(check):
+            try:
+                upgrade.tick(log=self.log)
+                today = datetime.now().strftime("%Y-%m-%d")
+                if self.cfg.get("last_date") == today or datetime.now().hour < hour:
+                    continue
+                upgrade.propose(push=True, log=self.log)
+                self.cfg["last_date"] = today     # 제안할 게 없어도 하루 한 번만 본다
+                if self.save_fn:
+                    self.save_fn()
+            except Exception as e:
+                self.log(f"[upgrade] 점검 오류: {e}")
+
+
 def _named_mutex(name):
     """이 PC 에서 하나만 — 잡으면 핸들, 남이 잡고 있으면 False, 윈도우가 아니면 None(IssuesMode._single 과 같은 방식)."""
     if os.name != "nt":
@@ -872,6 +917,7 @@ class Autonomy:
                                   speak_fn=speak_fn, cancel_fn=cancel_fn),
             "telegram":  TelegramMode(self.cfg["telegram"], self.log,
                                       respond_fn=(lambda t: respond_fn(t, speak=False)) if respond_fn else None),
+            "upgrade":   UpgradeMode(self.cfg["upgrade"], self.log, save_fn=lambda: _save_cfg(self.cfg)),
         }
 
     # 저장된 enabled 모드 복원(데몬/콘솔 시작 시 호출)
