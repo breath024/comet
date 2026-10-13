@@ -3,6 +3,8 @@
 
 흐름(호윤이 고른 것): 코멧이 고칠 거리를 찾아 「제안」 → 호윤이 「업그레이드 1」 → 따로 떼어 둔 복사본(git worktree)에서
 클로드가 고치고 아스트라가 검토 → 시험 → 호윤이 「업그레이드 적용」 해야 진짜 코드에 들어간다. 데몬 재시작은 호윤이.
+제안 뒤엔 「바로 패치해」 「1번 고쳐」 「걔네한테 넘겨서 실행해 봐」 같은 말도 시작으로 알아듣는다(_go_pick — 10/13 호윤이
+텔레그램에서 그렇게 답했는데 대화로 흘러 안 됨).
 
 막혔을 때 우회(호윤 「여러 케이스를 생각해야 해」):
   제안  : 클로드 → 아스트라 → 둘 다 안 되면 열린 이슈 · 반복 오류를 그대로 제안(모델 없이)
@@ -286,7 +288,7 @@ def propose(push=True, log=print, force=False):
         return "지금은 고칠 거리 못 찾았어."
     text = (f"코멧 업그레이드 제안 ({by})\n"
             + "\n".join(f"{i}) {p['title']} — {p['why']}" for i, p in enumerate(items, 1))
-            + "\nPC 앞(콘솔 · 폰 웹)에서 「업그레이드 1」처럼 번호로 시작 · 「업그레이드 보기」는 어디서나")
+            + "\nPC 앞(콘솔 · 폰 웹)에서 「바로 고쳐」(전부) · 「1번 고쳐」 · 「업그레이드 1」로 시작 · 「업그레이드 보기」는 어디서나")
     if push:
         _push("업그레이드 제안 " + str(len(items)) + "개", text)
     return text
@@ -709,11 +711,65 @@ def _push(title, body):
 REFUSE = "업그레이드 시작 · 적용 · 되돌리기는 텔레그램에선 안 해 — PC 앞(콘솔이나 폰 웹)에서. 「업그레이드 상태 · 보기」는 여기서도 돼."
 
 
+# 제안 뒤 「업그레이드」라는 말 없이 「해」 — 10/13 텔레그램 「바로 패치해」가 대화로 흘러 로컬 · 클로드가 「못 한다」만 했다
+GO_STRONG = re.compile(r"패치|고쳐|고치|업글")
+GO_WEAK = re.compile(r"실행|진행|넘겨|돌려|시작|ㄱㄱ|고고")
+GO_CTX = re.compile(r"걔네|클로드|아스트라|제안|그거|바로|[1-9]\s*번|전부")
+GO_NO = re.compile(r"[?？]|어떻게|뭐|왜|말고|하지\s*마|안\s*해|나중|보류|취소|그만")
+GO_FRESH_H = 6
+
+
+def _go_pick(s):
+    """제안 뒤의 「바로 패치해」 「1번 고쳐」 「걔네한테 넘겨서 실행해 봐」 → 고를 제안 번호들(번호 없으면 전부), 아니면 None.
+       제안이 GO_FRESH_H 시간 안에 나왔고 · 그 제안으로 아직 시작 안 했고 · 하던 업그레이드가 없을 때만
+       (「영상 고쳐」 같은 딴 말을 업그레이드로 잡지 않게)."""
+    if len(s) > 60 or GO_NO.search(s) or not (GO_STRONG.search(s) or (GO_WEAK.search(s) and GO_CTX.search(s))):
+        return None
+    st = _load()
+    p = st.get("proposals") or {}
+    items = p.get("items") or []
+    if not items or p.get("used") or st.get("job"):
+        return None
+    try:
+        age = dt.datetime.now() - dt.datetime.strptime(p.get("at", ""), "%Y-%m-%d %H:%M")
+    except ValueError:
+        return None
+    if age > dt.timedelta(hours=GO_FRESH_H):
+        return None
+    nums = sorted({int(n) for n in re.findall(r"([1-9])\s*번", s)})
+    if not nums:
+        return list(range(1, len(items) + 1))
+    return [n for n in nums if n <= len(items)] or None
+
+
+def _start_picks(nums, log=print):
+    """고른 제안을 한 작업으로 — 하나면 그대로, 여럿이면 한 요청에 묶는다(복사본은 한 번에 하나라서)."""
+    items = (_load().get("proposals") or {}).get("items") or []
+    picked = [items[n - 1] for n in nums]
+    if len(picked) == 1:
+        msg = start(picked[0]["request"], picked[0]["title"], log)
+    else:
+        req = (f"아래 {len(picked)}가지를 각각 고쳐라. 서로 따로다 — 하나가 막혀도 나머지는 끝내고, "
+               "못 한 건 「못 한 것」에 번호와 함께 적어라.\n\n"
+               + "\n\n".join(f"{i}) {p['title']}\n{p['request']}" for i, p in enumerate(picked, 1)))
+        msg = start(req, "제안 " + "·".join(map(str, nums)) + " 한꺼번에", log)
+    if msg.startswith("업그레이드 시작"):
+        with _lock:
+            st = _load()
+            if st.get("proposals"):
+                st["proposals"]["used"] = True
+                _save(st)
+    return msg
+
+
 def command(t, remote=False, log=print):
-    """「업그레이드 …」 명령이면 답, 아니면 None(대화로 흘림 — 「업그레이드 어떻게 해?」 같은 말)."""
+    """「업그레이드 …」 명령이나 제안 뒤 「바로 고쳐」 같은 말이면 답, 아니면 None(대화로 흘림 — 「업그레이드 어떻게 해?」 같은 말)."""
     s = t.strip()
     if not s.startswith("업그레이드"):
-        return None
+        nums = _go_pick(s)
+        if nums is None:
+            return None
+        return REFUSE if remote else _start_picks(nums, log)
     rest = s[len("업그레이드"):].strip()
     key = rest.replace(" ", "")
     if key in ("", "상태"):

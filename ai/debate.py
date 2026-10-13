@@ -60,7 +60,9 @@ def ask_claude(prompt, timeout=300, tools="", cwd=None):
        cwd=None 이면 임시폴더에서 돈다(회의용 — 프로젝트 CLAUDE.md 가 안 끌려오게).
        cwd=경로 를 주면 그 폴더에서 돈다(위임용 — 그 프로젝트의 CLAUDE.md·파일을 봐야 하니까)."""
     exe = shutil.which("claude") or os.path.expanduser(r"~\.local\bin\claude.exe")
-    args = [exe, "-p", "--no-session-persistence", "--output-format", "text", "--tools", tools]
+    # --strict-mcp-config: 호윤 계정의 노션 · 드라이브 연결을 안 끌고 온다 — 텔레그램 말에 대신 답하는 우회 경로에도
+    #   그게 보여서 「노션 · 드라이브만 있다」고 답했다(10/13). 코멧은 MCP 를 안 쓴다.
+    args = [exe, "-p", "--strict-mcp-config", "--no-session-persistence", "--output-format", "text", "--tools", tools]
     if tools:
         args += ["--allowed-tools", tools]
     with tempfile.TemporaryDirectory(prefix="comet_claude_") as tmp:

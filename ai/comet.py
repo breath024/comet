@@ -1072,11 +1072,11 @@ class Comet:
             if ans is not None:          # None = "전화번호 뭐야" 같은 일반 말 → 대화로 흘림
                 return ans
         # ── 자가 업그레이드 — upgrade.py (시작 · 적용 · 되돌리기는 텔레그램에선 막음) ──
-        if t.startswith("업그레이드"):
-            import upgrade
-            ans = upgrade.command(t, remote=remote_guard.active())
-            if ans is not None:          # None = "업그레이드 어떻게 해?" 같은 일반 말 → 대화로 흘림
-                return ans
+        #    「업그레이드 …」 말고 제안 뒤 「바로 패치해」 「1번 고쳐」도 여기서 잡는다(upgrade._go_pick · 10/13)
+        import upgrade
+        ans = upgrade.command(t, remote=remote_guard.active())
+        if ans is not None:              # None = "업그레이드 어떻게 해?" 같은 일반 말 → 대화로 흘림
+            return ans
         # ── 이슈 접수함 (쓰다가 이상한 것 한 줄로 던져두기 → 고쳐지면 닫기) — issue_box.py ──
         if t.strip().startswith("이슈"):
             import issue_box
@@ -1566,7 +1566,9 @@ class Comet:
             talk.append(f"{who}: {str(m.get('content', ''))[:400]}")
         prompt = (SYSTEM + "\n\n"
                   "[지금은 로컬 모델이 못 떠서 네가 대신 답한다. 도구·파일·기억은 못 쓰니 아는 선에서 답하고,\n"
-                  " 확인이 필요한 건 모른다고 해라. 위 말투 그대로, 군더더기 없이 답만 내라.]\n\n"
+                  " 확인이 필요한 건 모른다고 해라. 위 말투 그대로, 군더더기 없이 답만 내라.\n"
+                  " 코멧 코드를 고쳐 달라는 말이면 「클로드 코드를 열어라」 대신 코멧 명령을 알려 줘라 —\n"
+                  " 제안된 것은 「바로 고쳐」 · 「업그레이드 1」, 새로 시킬 건 「업그레이드 요청 <내용>」(시작은 PC 앞에서).]\n\n"
                   + ("[최근 대화]\n" + "\n".join(talk) + "\n\n" if talk else "")
                   + f"[방금 물어본 것]\n호윤: {text}")
         for who, ask in (("클로드", lambda p: debate.ask_claude(p, timeout=120)),
