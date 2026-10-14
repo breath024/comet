@@ -329,7 +329,7 @@ HELP_TEXT = """COMET 기능 목록
   업그레이드 제안 — 지금 고칠 거리 찾기 (1~2분, 배너 · 텔레그램)
   업그레이드 1 / 업그레이드 요청 <내용> — 떼어 둔 복사본에서 고치기 시작 (끝나면 알림)
   업그레이드 보기 — 바뀐 것 · 검토 · 시험 결과
-  업그레이드 적용 — 진짜 코드에 반영(커밋) → 데몬 재시작은 직접 · 업그레이드 버려 / 다시 / 되돌리기
+  업그레이드 적용 — 진짜 코드에 반영(커밋) → 데몬이 스스로 껐다 켬 · 업그레이드 버려 / 다시 / 되돌리기
   시작 · 적용 · 되돌리기는 텔레그램에선 안 됨(PC 앞 · 폰 웹)
 
 [화면·이미지]
@@ -1108,6 +1108,12 @@ class Comet:
         import upgrade
         ans = upgrade.command(t, remote=remote_guard.active())
         if ans is not None:              # None = "업그레이드 어떻게 해?" 같은 일반 말 → 대화로 흘림
+            if ans.startswith(("반영했어", "되돌렸어")):
+                #   진짜 코드가 바뀌었으니 데몬이 스스로 껐다 켠다(restart.py · 10/14 호윤 지시)
+                import restart
+                ok, why = restart.soon("업그레이드 " + ("적용" if ans.startswith("반영") else "되돌리기"))
+                ans += ("\n데몬이 2~3초 뒤 스스로 껐다 켜 — 새 코드로 다시 뜨면 대화창이 저절로 다시 붙어."
+                        if ok else f"\n★스스로 재시작 안 함: {why}. 데몬 창 닫고 run_daemon.bat 으로 다시 켜 줘.")
             return ans
         # ── 이슈 접수함 (쓰다가 이상한 것 한 줄로 던져두기 → 고쳐지면 닫기) — issue_box.py ──
         if t.strip().startswith("이슈"):

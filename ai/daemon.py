@@ -137,6 +137,8 @@ TOKEN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "daemon_to
 _comet = comet.Comet()
 _comet.auto_approve = True        # 데몬(폰)은 input() 불가 → 자동승인. 콘솔은 False(기본).
 _lock = threading.Lock()          # 단일 사용자 — 요청 직렬화로 history 보호
+import restart                                 # 업그레이드 적용 · 되돌리기 뒤 스스로 껐다 켜기(10/14)
+restart.ENABLED, restart.LOCK = True, _lock
 _comet.autonomy.modes["talk"].lock = _lock   # Alt 두 번 말걸기도 폰 요청과 같은 줄에 선다
 _comet.autonomy.modes["telegram"].lock = _lock   # 텔레그램으로 온 질문도 같은 줄(답할 때마다 읽으니 복원 뒤에 꽂아도 된다)
 
