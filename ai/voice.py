@@ -330,6 +330,15 @@ _hangul_cache = None
 #    매 알림마다 20초씩 붙잡느니, 그동안은 모르는 영어를 그대로 읽게 둔다(사전·약어·캐시는 그대로 먹는다).
 HANGUL_PAUSE = 600
 _hangul_fail = 0.0
+#    연결 거부(ollama 꺼짐)는 공용 표시(ollama_down.py)로 넓혔다 — 살아나면 10분 안 기다리고 바로 다시 묻는다.
+
+
+def _ollama_down():
+    try:
+        import ollama_down
+        return ollama_down.is_down()
+    except ImportError:
+        return False
 
 
 def _load_hangul():
@@ -357,6 +366,12 @@ def _ask_hangul(words):
                        'JSON 만: {"단어": "한글"}\n\n' + "\n".join(words)}])
         got = json.loads(r["message"].get("content") or "{}")
     except Exception as e:
+        try:
+            import ollama_down
+            if ollama_down.mark(e):     # 꺼짐이면 공용 표시가 살아날 때까지 막는다 — 10분 쉬는 시간은 안 건다
+                return {}
+        except ImportError:
+            pass
         _hangul_fail = time.time()
         print(f"  [한글 소리 실패] {str(e)[:60]} — {HANGUL_PAUSE // 60}분간 모델 안 부름")
         return {}
@@ -383,7 +398,7 @@ def speak_hangul(text: str) -> str:
                           if w.lower() not in _EN_WORDS and w.lower() not in cache
                           and not (w.isupper() and len(w) <= 4)
                           and not re.fullmatch(r"[A-Z]{2,4}s", w)})
-        if unknown and time.time() - _hangul_fail > HANGUL_PAUSE:
+        if unknown and time.time() - _hangul_fail > HANGUL_PAUSE and not _ollama_down():
             new = _ask_hangul(unknown[:40])
             if new:
                 cache.update(new)

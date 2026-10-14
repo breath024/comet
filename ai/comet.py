@@ -17,6 +17,7 @@ import json
 import subprocess
 import itertools
 import ollama
+import ollama_down     # 공용 「ollama 꺼짐」 표시 — 연결 거부면 문지기·light 건너뛰고 클로드로
 
 # ── 한글 윈도우 콘솔 UTF-8 강제 ──────────────────────────────────
 try:
@@ -720,6 +721,8 @@ class Router:
                 if data.get("web") is True:
                     auto_web = (data.get("query") or text).strip()
             except Exception as e:
+                if ollama_down.mark(e):
+                    raise        # ollama 가 아예 없다 — 기본 등급으로 또 부딪치지 말고 바로 우회로
                 tier, reason = "medium", f"분류 실패→기본 ({e})"
 
         # 자동 웹검색은 명시 웹검색 경로와 동일하게 medium(gemma4:26b)으로 고정
@@ -1311,6 +1314,13 @@ class Comet:
             elif screen:
                 print("  · 화면 인식 (gemma4 vision)")
                 full = self._look(text)
+            elif ollama_down.is_down():
+                #  ★2026-10-14 — 연결 거부가 한 번 났으면 살아날 때까지 문지기 · light 를 안 거친다(ollama_down.py)
+                print("  · ollama 꺼짐 표시 — 문지기 · light 건너뛰고 바로 우회")
+                full = self._cloud_reply(text)
+                if not full:
+                    print("\n  [오류] 로컬 꺼짐 · 클로드 · 아스트라 우회도 실패")
+                    return "[오류] 로컬 모델이 꺼져 있고 우회도 실패했어."
             else:
                 tier, reason, use_tools, auto_web = self.router.route(text)
                 tier, reason, _ka = self._game_adjust(tier, reason, flat)
@@ -1341,7 +1351,8 @@ class Comet:
                     #    light(12b) 로 내려서 다시 돌린다.** 클라우드 우회(_cloud_reply)는 도구·기억을
                     #    통째로 못 써서 "일정 확인 못 합니다" 같은 답이 나온다 — 등급을 내리는 쪽이
                     #    답 품질은 조금 낮아도 **시킨 걸 실제로 실행**한다. 호윤 지시(9/22).
-                    if tier == "light" or not _is_local_down(e):
+                    #    단 연결 거부(ollama 꺼짐)는 light 도 못 뜬다 → 내리지 말고 바로 우회(10/14).
+                    if tier == "light" or not _is_local_down(e) or ollama_down.mark(e):
                         raise
                     print(f"\n  · {cfg['model']} 이 못 떴다 → light 로 내려서 다시 ({str(e)[:70]})")
                     light = dict(TIERS["light"])
@@ -1350,6 +1361,7 @@ class Comet:
                     full = _run(light)
         except Exception as e:
             #   게임 중 VRAM 이 없어 모델이 아예 못 뜨는 일이 잦다 — 그때 대화를 끊지 않고 우회한다
+            ollama_down.mark(e)        # light · 화면 인식 쪽에서 난 연결 거부도 표시는 켠다
             full = self._cloud_reply(text) if _is_local_down(e) else ""
             if not full:
                 print(f"\n  [오류] 응답 실패: {e}")
