@@ -27,8 +27,13 @@ import uuid
 import urllib.error
 import urllib.request
 
-from PySide6.QtCore import Qt, QObject, Signal, QTimer
-from PySide6.QtGui import QFont, QIcon, QKeySequence, QShortcut
+import math
+import random
+import time
+
+from PySide6.QtCore import Qt, QObject, QEvent, QPointF, Signal, QTimer
+from PySide6.QtGui import (QBrush, QColor, QFont, QIcon, QKeySequence, QLinearGradient, QPainter, QPen,
+                           QRadialGradient, QShortcut)
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLabel,
                                QPushButton, QScrollArea, QSizePolicy,
@@ -158,6 +163,112 @@ class Bubble(QLabel):
         self.updateGeometry()                    # 높이를 다시 물어보게만 한다
 
 
+class CometSky(QWidget):
+    """코멧이 일하는 동안 대화 영역 배경에 혜성이 지나간다(10/15 호윤 「작동하고 있는 거 알 듯」).
+
+    대화 영역(스크롤 뷰포트)의 자식으로 두고 lower() 해서 말풍선 뒤에 그린다 — 말풍선이 얹힌 내용 위젯은
+    배경을 투명하게 둬야 보인다(ChatWindow 에서 inner 를 transparent 로). 마우스는 그대로 통과.
+    켜고 끌 때 0.5초 동안 서서히 나타나고 사라진다. 꺼져 있으면 타이머도 멈춰 아무것도 안 그린다."""
+    FPS_MS = 33
+    PERIOD = 2.6                  # 혜성 하나가 가로지르는 초
+    FADE = 0.5
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self._on = False
+        self._alpha = 0.0
+        self._t0 = time.time()
+        self._lane = self._new_lane()
+        self._sparks = []         # [x, y, vx, vy, 남은 초]
+        self._stars = [(random.random(), random.random(), random.random() * 6.28) for _ in range(40)]
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._step)
+        self._last = time.time()
+
+    @staticmethod
+    def _new_lane():
+        """이번 혜성의 길 — 왼쪽 위 어딘가에서 오른쪽 아래 어딘가로, 살짝 휘게."""
+        return (random.uniform(-0.1, 0.5), random.uniform(0.6, 1.1), random.uniform(-0.15, 0.15))
+
+    def set_on(self, on):
+        if on == self._on:
+            return
+        self._on = on
+        if on and not self._timer.isActive():
+            self._t0 = self._last = time.time()
+            self._lane = self._new_lane()
+            self._timer.start(self.FPS_MS)
+
+    def _pos(self, p):
+        """길 위 p(0~1) 자리의 화면 좌표."""
+        y0, y1, bend = self._lane
+        w, h = self.width(), self.height()
+        x = -0.15 * w + p * 1.3 * w
+        y = (y0 + (y1 - y0) * p + bend * math.sin(p * math.pi)) * h
+        return QPointF(x, y)
+
+    def _step(self):
+        now = time.time()
+        dt = now - self._last
+        self._last = now
+        self._alpha = min(1.0, self._alpha + dt / self.FADE) if self._on else max(0.0, self._alpha - dt / self.FADE)
+        if not self._on and self._alpha <= 0:
+            self._timer.stop()
+            self._sparks.clear()
+        p = (now - self._t0) / self.PERIOD
+        if p >= 1:
+            self._t0, p = now, 0.0
+            self._lane = self._new_lane()
+        if self._on and random.random() < 0.6:                 # 꼬리에서 떨어지는 부스러기
+            hp = self._pos(p)
+            self._sparks.append([hp.x(), hp.y(), random.uniform(-30, 10), random.uniform(-10, 30), 0.9])
+        for s in self._sparks:
+            s[0] += s[2] * dt
+            s[1] += s[3] * dt
+            s[4] -= dt
+        self._sparks = [s for s in self._sparks if s[4] > 0]
+        self.update()
+
+    def paintEvent(self, e):
+        if self._alpha <= 0:
+            return
+        a = self._alpha
+        qp = QPainter(self)
+        qp.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        t = time.time()
+        for sx, sy, ph in self._stars:                         # 희미하게 반짝이는 별
+            c = QColor(200, 215, 255, int(a * (40 + 40 * math.sin(t * 2 + ph))))
+            qp.fillRect(int(sx * w), int(sy * h), 2, 2, c)
+        p = (t - self._t0) / self.PERIOD
+        head = self._pos(min(p, 1.0))
+        g = QLinearGradient(self._pos(max(p - 0.28, 0.0)), head)   # 꼬리: 끝은 투명 → 머리 쪽은 밝게
+        g.setColorAt(0.0, QColor(90, 140, 255, 0))
+        g.setColorAt(0.7, QColor(120, 170, 255, int(a * 90)))
+        g.setColorAt(1.0, QColor(220, 235, 255, int(a * 200)))
+        for width, k in ((14, 0.35), (6, 0.7), (2, 1.0)):       # 넓고 흐린 빛 + 가운데 가는 줄
+            pen = QPen(QBrush(g), width, Qt.SolidLine, Qt.RoundCap)
+            qp.setOpacity(k)
+            n = 24
+            pts = [self._pos(max(p - 0.28, 0.0) + (min(p, 1.0) - max(p - 0.28, 0.0)) * i / n) for i in range(n + 1)]
+            qp.setPen(pen)
+            for i in range(n):
+                qp.drawLine(pts[i], pts[i + 1])
+        qp.setOpacity(1.0)
+        glow = QRadialGradient(head, 26)                       # 머리 빛무리
+        glow.setColorAt(0.0, QColor(255, 255, 255, int(a * 230)))
+        glow.setColorAt(0.25, QColor(170, 205, 255, int(a * 140)))
+        glow.setColorAt(1.0, QColor(90, 140, 255, 0))
+        qp.setPen(Qt.NoPen)
+        qp.setBrush(glow)
+        qp.drawEllipse(head, 26, 26)
+        for x, y, _vx, _vy, life in self._sparks:
+            qp.setBrush(QColor(180, 210, 255, int(a * 200 * life)))
+            qp.drawEllipse(QPointF(x, y), 1.6, 1.6)
+        qp.end()
+
+
 class Input(QTextEdit):
     """Enter = 보내기, Shift+Enter = 줄바꿈. 내용에 따라 높이가 자란다."""
     send = Signal()
@@ -242,12 +353,17 @@ class ChatWindow(QWidget):
             f"QScrollBar::handle:vertical{{background:{LINE};border-radius:4px;}}"
             "QScrollBar::add-line,QScrollBar::sub-line{height:0;}")
         inner = QWidget()
+        inner.setStyleSheet("background:transparent;")       # 뒤의 혜성(CometSky)이 말풍선 사이로 보이게
         self.log = QVBoxLayout(inner)
         self.log.setContentsMargins(16, 16, 16, 16)
         self.log.setSpacing(10)
         self.log.addStretch(1)
         self.scroll.setWidget(inner)
         root.addWidget(self.scroll, 1)
+        self.sky = CometSky(self.scroll.viewport())          # 코멧이 일하는 동안 배경에 혜성
+        self.sky.lower()
+        self.scroll.viewport().installEventFilter(self)
+        self._work = []                                       # 데몬이 /news 로 알려 준 '지금 하는 일'
 
         # ── 입력줄 ──
         foot = QWidget()
@@ -334,6 +450,21 @@ class ChatWindow(QWidget):
         QTimer.singleShot(0, self._to_bottom)
         return lab
 
+    def eventFilter(self, obj, e):
+        if obj is self.scroll.viewport() and e.type() == QEvent.Resize:
+            self.sky.setGeometry(obj.rect())                  # 혜성은 늘 보이는 대화 영역 전체에
+        return super().eventFilter(obj, e)
+
+    def _update_sky(self):
+        """답을 기다리는 중이거나 데몬이 뒤에서 일하는 중(업그레이드 · 회의 · 텔레그램 답 …)이면 혜성을 띄운다.
+           뒤에서 하는 일은 머리말에도 — 그동안 창이 조용해서 멈춘 건지 일하는 건지 몰랐다(10/15)."""
+        self.sky.set_on(self._busy or bool(self._work))
+        if not self._busy:
+            if self._work:
+                self.status.setText("작업 중 · " + " / ".join(self._work)[:60])
+            elif self.status.text().startswith("작업 중"):
+                self.status.setText("데몬 연결됨")
+
     def _to_bottom(self):
         bar = self.scroll.verticalScrollBar()
         bar.setValue(bar.maximum())
@@ -399,6 +530,7 @@ class ChatWindow(QWidget):
         self._stopping = False
         self.status.setText("생각 중… 0초 · Esc 멈춤")
         self.tick.start(1000)
+        self._update_sky()
         self._rid = uuid.uuid4().hex[:12]
         threading.Thread(target=self._worker, args=(text, self._rid), daemon=True).start()
 
@@ -442,6 +574,7 @@ class ChatWindow(QWidget):
             self._pending = None
         self.status.setText("멈춤")
         self._busy = False
+        self._update_sky()
         self.btn.setEnabled(True)
         self.input.setFocus()
 
@@ -489,6 +622,10 @@ class ChatWindow(QWidget):
         self._link(ok or not str(res).startswith("[연결 안 됨]"))
         if ok and isinstance(res, dict) and "on" in res:
             self.news_on = bool(res["on"])
+            work = [w for w in (res.get("work") or []) if not (self._busy and w == "대화")]   # 내 답 기다리는 건 이미 앎
+            if work != self._work:
+                self._work = work
+                self._update_sky()
             for e in res.get("feed") or []:                    # 새로 알린 소식 → 말풍선
                 cat = e.get("cat")
                 if cat == "tg_me":                             # 텔레그램으로 호윤이 한 말 · 코멧 답(10/14)
@@ -537,6 +674,7 @@ class ChatWindow(QWidget):
             self._pending.setText(reply)
             self._pending = None
         self._busy = False
+        self.sky.set_on(bool(self._work))                     # 머리말의 'N초' 는 그대로 두고 혜성만
         self.btn.setEnabled(True)
         self.input.setFocus()
         QTimer.singleShot(0, self._to_bottom)

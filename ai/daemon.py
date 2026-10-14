@@ -421,6 +421,26 @@ def _speak_async(text):
     threading.Thread(target=run, daemon=True).start()
 
 
+def _work_now():
+    """코멧이 지금 하고 있는 일 — /news 답에 실어 대화창이 혜성 애니메이션 · 머리말로 보여 준다
+       (10/15 호윤 「뭔가 하고 있는 중일 때 배경에 혜성 … 그러면 작동하고 있는 거 알 듯」).
+       3초마다 불리니 가벼운 것만 본다 — 대화 줄 · 회의 · 이 데몬 안에서 도는 업그레이드."""
+    work = []
+    if _lock.locked():
+        work.append("대화")                        # 대화창 · 텔레그램 · 말걸기 · 폰 중 하나가 답 만드는 중
+    if getattr(_comet, "_debating", False):
+        work.append("회의")
+    try:
+        import upgrade
+        j = upgrade._load().get("job") or {}
+        if (j.get("status") in ("running", "fixing") and j.get("pid") == os.getpid()
+                and upgrade._alive(j["pid"])):     # 꺼졌다 뜬 뒤 남은 'running' 표시는 빼고
+            work.append(f"업그레이드 · {j.get('step') or j.get('status')}")
+    except Exception:
+        pass
+    return work
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send(self, code, body, ctype="application/json"):
         data = body.encode("utf-8")
@@ -577,6 +597,7 @@ class Handler(BaseHTTPRequestHandler):
             import issues
             after = data.get("after")
             st["feed"], st["last"] = issues.feed_after(after if isinstance(after, int) else None)
+            st["work"] = _work_now()
         except Exception as e:
             self._send(500, json.dumps({"error": str(e)}, ensure_ascii=False))
             return
