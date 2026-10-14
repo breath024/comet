@@ -728,6 +728,19 @@ def _note(cat, text):
         pass
 
 
+# 답 단계 시각 — comet.respond 가 모델을 고른 순간을 여기 찍는다(텔레그램 답이 늦는 원인 찾기용, 10/14).
+#   respond 는 텔레그램 받기 스레드에서 그대로 돌아서 스레드별로 둔다 — 대화창 · 말걸기 쪽 찍기는 그냥 버려진다.
+_stamps = threading.local()
+
+
+def stamp_routed():
+    import time
+    _stamps.routed = time.time()
+    cb = getattr(_stamps, "on_routed", None)          # 텔레그램 답 중이면 그 자리에서 로그 한 줄
+    if cb:
+        cb()
+
+
 class TelegramMode(_Mode):
     name = "telegram"
     desc = "텔레그램으로 물으면 답함 (호윤 대화방만)"
@@ -740,6 +753,15 @@ class TelegramMode(_Mode):
         super().__init__(cfg, log)
         self.respond_fn = respond_fn      # respond(text) -> reply (PC 에서 소리 안 냄)
         self.lock = None                  # 데몬이 _lock 을 꽂는다 — 폰 웹·대화창·Alt 두 번과 같은 줄에 선다
+        self._t_in = 0.0                  # 지금 답하는 말을 받은 시각 — _mark 가 +초 를 여기서 잰다
+
+    def _mark(self, what):
+        """단계 하나를 그 자리에서 바로 찍는다 — 생성·보내기가 멈춰도 어디까지 왔는지 남게(10/14)."""
+        import time
+        try:
+            self.log(f"[텔레그램]   {what} +{time.time() - self._t_in:.1f}s")
+        except Exception:
+            pass
 
     def available(self):
         import notify
@@ -762,20 +784,32 @@ class TelegramMode(_Mode):
                     notify.send("생각이 좀 걸리네 — 끝나면 바로 보낼게.", html_mode=False)
                     told = True
 
-        notify.typing()
+        notify.typing()                      # 이것도 urlopen 한 번(받기 스레드에서) — 단계 로그에 따로 찍는다
+        st = self._times = {"typed": time.time()}   # + 대화 줄 잡음(lock) · 모델 고름(routed) · 답 끝(gen) — 요약 줄용
+        self._mark("입력 중 표시")
         threading.Thread(target=busy, name="telegram-typing", daemon=True).start()
         import remote_guard
+        _stamps.routed = None
+        _stamps.on_routed = lambda: self._mark("모델 고름")
         try:
             with remote_guard.on():          # 원격 표시 — 코딩 · 셸 · 위임 · 파일 쓰기는 막힌다(10/10 T-18)
                 if self.lock:
                     with self.lock:
+                        st["lock"] = time.time()
+                        self._mark("줄 잡음")
                         reply = self.respond_fn(text)
                 else:
+                    st["lock"] = time.time()
+                    self._mark("줄 잡음")
                     reply = self.respond_fn(text)
         except Exception as e:
             reply = f"[오류] {e}"
         finally:
             done.set()
+            st["gen"] = time.time()
+            st["routed"] = _stamps.routed
+            _stamps.on_routed = None
+            self._mark("답 끝")
         return (reply or "").strip() or "(할 말이 없대 — 빈 답)"
 
     def _handle(self, u):
@@ -802,13 +836,31 @@ class TelegramMode(_Mode):
             notify.send("지금은 글만 알아들어 — 사진·음성은 아직 못 받아.", html_mode=False)
             return
         # 받은 말 · 답 전문을 콘솔과 대화창에도 — 예전엔 받은 말 60자 · 답 글자 수만 찍혀서 PC 앞에선 뭐가 오갔는지 몰랐다(10/14)
-        self.log(f"\n[텔레그램] 받음: {text[:500]}")
+        t_in = self._t_in = time.time()
+        self.log(f"\n[텔레그램] 받음(폰에서 보낸 지 {t_in - msg.get('date', 0):.0f}s): {text[:500]}")
         _note("tg_me", text)
         reply = self._answer(text)
+        t_send = time.time()
+        self._mark("보내기 시작")              # 조각 · 시도마다는 notify.send 가 그 자리에서 찍는다
         r = notify.send_long(reply)
+        t_end = time.time()
+        self._mark("보내기 끝")
         self.log(f"[텔레그램] 답: {reply[:500]}" + (f" …(전체 {len(reply)}자)" if len(reply) > 500 else ""))
         self.log(f"[텔레그램] 답함 {len(reply)}자 · {r.get('parts')}통 — {r.get('msg', '')[:60]}")
+        try:                                  # 시각 찍기가 틀려도 대화창 말풍선은 그대로 나가게
+            self._log_times(t_in, self._times, t_send, t_end, r)
+        except Exception as e:
+            self.log(f"[텔레그램] 답 시간 기록 실패: {e}")
         _note("tg_ai", reply)
+
+    def _log_times(self, t_in, st, t_send, t_end, r):
+        """답 하나 한 줄 요약 — 단계는 _mark · notify.send 가 그때그때 찍었다(10/14 — 늦는 원인 찾기용, 동작은 안 바꾼다)."""
+        import notify
+        times = r.get("times") or []
+        lock = st.get("lock") or t_in
+        self.log(f"[텔레그램] 답 시간: 대기 {lock - t_in:.1f}s · 생성 {(st.get('gen') or lock) - lock:.1f}s"
+                 f" · 보내기 {t_end - t_send:.1f}s(시도 {sum(len(t[2]) for t in times)}번,"
+                 f" urlopen 타임아웃 {notify.TIMEOUT}초)")
 
     def _run(self):
         import urllib.error

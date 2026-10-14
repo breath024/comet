@@ -1335,6 +1335,8 @@ class Comet:
                 else:
                     flag = ""
                 print(f"  · 문지기: {tier} ({cfg['model']}){flag} — {reason}")
+                import autonomy
+                autonomy.stamp_routed()        # 모델 고른 시각 — 텔레그램 답 단계 로그용(10/14)
                 if auto_web:
                     print(f"  · 자동 웹검색 발동 — 키워드 없이 사실 조회 판단: {auto_web}")
 

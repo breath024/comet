@@ -10,6 +10,7 @@ import os
 import re
 import html
 import json
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -17,6 +18,7 @@ import urllib.request
 _DIR = os.path.dirname(os.path.abspath(__file__))
 CFG_FILE = os.path.join(_DIR, "telegram_config.json")
 API = "https://api.telegram.org/bot{token}/{method}"
+TIMEOUT = 15            # 초 — 보내기(sendMessage 등) 한 번의 urlopen 타임아웃. 답 시간 로그에도 찍힌다
 
 
 def _load_cfg():
@@ -41,7 +43,7 @@ def _call(method, token, data):
     url = API.format(token=token, method=method)
     body = urllib.parse.urlencode(data).encode("utf-8")
     req = urllib.request.Request(url, data=body)
-    with urllib.request.urlopen(req, timeout=15) as r:
+    with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
         return json.loads(r.read().decode("utf-8"))
 
 
@@ -83,7 +85,16 @@ def _plain(text):
     return html.unescape(re.sub(r"<[^>]+>", "", text or ""))
 
 
-def send(text: str, html_mode=True) -> dict:
+def _log_try(part, k, ok, sec):
+    """보내기 시도 하나를 끝난 그 자리에서 콘솔에 — 지연 안내처럼 send() 를 바로 부른 것도 남게(10/14)."""
+    try:
+        print(f"[텔레그램] 보내기{part} {k}번째 {'성공' if ok else '실패'} {sec:.1f}s"
+              f"(urlopen 타임아웃 {TIMEOUT}초)", flush=True)
+    except Exception:
+        pass
+
+
+def send(text: str, html_mode=True, part="", _try=1) -> dict:
     cfg = _load_cfg()
     token, cid = cfg.get("token"), cfg.get("chat_id")
     if not (token and cid):
@@ -91,21 +102,31 @@ def send(text: str, html_mode=True) -> dict:
     data = {"chat_id": cid, "text": text[:4000], "disable_web_page_preview": "true"}
     if html_mode:
         data["parse_mode"] = "HTML"
+    # tries = 시도마다 (성공?, 걸린 초) — 텔레그램 답이 늦는 원인 찾기용(10/14). 동작은 그대로
+    #   part = 로그에 붙일 꼬리(send_long 의 " 조각 2/3 …자"), _try = 몇 번째 시도(맨글 다시 보내기면 2)
+    t0 = time.time()
     try:
         res = _call("sendMessage", token, data)
     except urllib.error.HTTPError as e:
+        tries = [(False, time.time() - t0)]
+        _log_try(part, _try, *tries[0])
         body = e.read().decode("utf-8", "ignore")
         # 태그가 깨진 글(모델이 쓴 '<', 4000자에서 잘린 태그)은 400 "can't parse entities" 로
         # 통째로 거절된다 — 그대로 두면 같은 글로 재시도만 돈다. 태그를 벗겨 한 번 더 보낸다.
         if html_mode and "parse entities" in body:
-            r = send(_plain(text), html_mode=False)
+            r = send(_plain(text), html_mode=False, part=part, _try=_try + 1)
             if r.get("ok"):
                 r["msg"] = "전송됨(HTML 거절 → 맨글로)"      # 로그에서 모양이 깨졌다는 걸 알 수 있게
+            r["tries"] = tries + r.get("tries", [])
             return r
-        return {"ok": False, "msg": f"전송 실패: {e} {body[:200]}"}
+        return {"ok": False, "msg": f"전송 실패: {e} {body[:200]}", "tries": tries}
     except Exception as e:
-        return {"ok": False, "msg": f"전송 실패: {e}"}
-    return {"ok": bool(res.get("ok")), "msg": "전송됨" if res.get("ok") else str(res)}
+        tries = [(False, time.time() - t0)]
+        _log_try(part, _try, *tries[0])
+        return {"ok": False, "msg": f"전송 실패: {e}", "tries": tries}
+    tries = [(bool(res.get("ok")), time.time() - t0)]
+    _log_try(part, _try, *tries[0])
+    return {"ok": bool(res.get("ok")), "msg": "전송됨" if res.get("ok") else str(res), "tries": tries}
 
 
 def _esc(s):
@@ -188,9 +209,15 @@ def send_long(md, limit=3500):
             cur = f"{cur}\n\n{para}" if cur else para
     if cur.strip():
         chunks.append(cur)
-    res = [send(md_to_tg(c)) for c in chunks if c.strip()]
+    chunks = [c for c in chunks if c.strip()]
+    res, times = [], []                                # times = 조각마다 (글자 수, 걸린 초, 시도 목록)
+    for i, c in enumerate(chunks, 1):
+        t0 = time.time()
+        r = send(md_to_tg(c), part=f" 조각 {i}/{len(chunks)} {len(c)}자")
+        res.append(r)
+        times.append((len(c), time.time() - t0, r.get("tries", [])))
     return {"ok": bool(res) and all(r.get("ok") for r in res), "parts": len(res),
-            "msg": " / ".join(r.get("msg", "") for r in res)}
+            "msg": " / ".join(r.get("msg", "") for r in res), "times": times}
 
 
 def format_digest(new_items, urgent_items, max_general=8) -> str:
