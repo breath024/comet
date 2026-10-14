@@ -84,8 +84,11 @@ def _set_job(**kw):
         return st.get("job")
 
 
-def _history(st, title, status, commit=None):
-    st.setdefault("history", []).append({"at": _now(), "title": title, "status": status, "commit": commit})
+def _history(st, title, status, commit=None, items=None):
+    h = {"at": _now(), "title": title, "status": status, "commit": commit}
+    if items:
+        h["items"] = items                           # 제안 여럿을 한 작업으로 묶었으면 그 제목들
+    st.setdefault("history", []).append(h)
     st["history"] = st["history"][-30:]
 
 
@@ -661,8 +664,8 @@ def apply():
     sha = _git("rev-parse", "HEAD")[1].strip()
     with _lock:
         st = _load()
-        st["last_applied"] = {"commit": sha, "from": pre, "title": j["title"], "at": _now()}
-        _history(st, j["title"], "적용", sha)
+        st["last_applied"] = {"commit": sha, "from": pre, "title": j["title"], "at": _now(), "items": j.get("items")}
+        _history(st, j["title"], "적용", sha, j.get("items"))
         st["job"] = None
         _save(st)
     try:
@@ -698,7 +701,7 @@ def revert():
     with _lock:
         st = _load()
         st["last_applied"] = None
-        _history(st, la["title"], "되돌림")
+        _history(st, la["title"], "되돌림", items=la.get("items"))
         _save(st)
     _daylog(f"자가 업그레이드 되돌림 — {la['title']}")
     return f"되돌렸어: {la['title']}."
@@ -717,7 +720,7 @@ def discard():
         return f"복사본을 못 치움: {e}"
     with _lock:
         st = _load()
-        _history(st, j["title"], "버림")
+        _history(st, j["title"], "버림", items=j.get("items"))
         st["job"] = None
         _save(st)
     return f"버렸어: {j['title']} (진짜 코드는 안 건드렸음)"
@@ -761,6 +764,20 @@ def show():
     return "\n\n".join(parts)
 
 
+def _item_mark(st, title):
+    """제안 하나가 어디까지 갔나 — 적용한 것도 목록에 그대로 남아 「안 한 것」처럼 보였다(10/15).
+       번호(「업그레이드 2」)가 안 바뀌게 지우지 않고 꼬리만 붙인다. 아직 손 안 댄 건 빈 문자열."""
+    t = title[:30]
+    hit = lambda e: e.get("title") == t or t in [x[:30] for x in e.get("items") or []]
+    j = st.get("job")
+    if j and hit(j):
+        return f" ← 지금 하는 중({j['status']})"
+    for h in reversed(st.get("history") or []):
+        if hit(h):
+            return {"적용": " ✓ 적용함", "되돌림": " ↩ 되돌림"}.get(h["status"], f" ({h['status']})") + f" · {h['at'][5:]}"
+    return ""
+
+
 def status():
     st = _load()
     j = st.get("job")
@@ -773,7 +790,7 @@ def status():
     p = st.get("proposals")
     if p and p.get("items"):
         lines.append(f"제안({p['at']} · {p['by']}):")
-        lines += [f"  {i}) {x['title']} — {x['why']}" for i, x in enumerate(p["items"], 1)]
+        lines += [f"  {i}) {x['title']}{_item_mark(st, x['title']) or ' — ' + x['why']}" for i, x in enumerate(p["items"], 1)]
     if st.get("last_applied"):
         la = st["last_applied"]
         lines.append(f"마지막 적용: {la['title']} ({la['at']} · {la['commit'][:7]})")
@@ -845,7 +862,9 @@ def _start_picks(nums, log=print):
             st = _load()
             if st.get("proposals"):
                 st["proposals"]["used"] = True
-                _save(st)
+            if len(picked) > 1 and st.get("job"):
+                st["job"]["items"] = [p["title"] for p in picked]   # 상태 목록에 어느 제안이 됐는지 붙이려고
+            _save(st)
     return msg
 
 
@@ -911,6 +930,10 @@ def command(t, remote=False, log=print):
         n = int(pick.group(1))
         if n > len(p):
             return f"제안 {n}번이 없어. " + status()
+        mark = _item_mark(_load(), p[n - 1]["title"])
+        if mark.startswith(" ✓"):
+            return (f"제안 {n}번({p[n - 1]['title']})은 이미 적용했어({mark.strip()}). "
+                    "또 하려면 「업그레이드 요청 <내용>」으로.\n\n" + status())
         return start(p[n - 1]["request"], p[n - 1]["title"], log)
     if rest.startswith("요청"):
         req = rest[2:].lstrip(" :：").strip()
