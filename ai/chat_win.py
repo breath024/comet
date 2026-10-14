@@ -6,6 +6,7 @@
 #     run.bat 콘솔처럼 두 번째 인스턴스를 띄우지 않으니 대화기록이 안 꼬인다.
 #   · 열 때 comet_history.json 의 최근 대화를 먼저 그려준다(코멧이 기억하는 것과 같은 것).
 #   · Enter 전송 / Shift+Enter 줄바꿈 / Esc 는 입력 비우기. 창은 계속 떠 있는다.
+#     생각 중에 Esc = 보낸 말 멈추기(데몬 POST /cancel) — 잘못 친 말은 대화 기록에서도 빠진다.
 #   · 인증은 daemon_token.txt 를 읽어 X-Token 헤더로. (폰은 Tailscale 헤더, 여긴 토큰)
 #
 #   실행:  python chat_win.py     콘솔 없이:  run_chat.bat
@@ -22,6 +23,7 @@ import json
 import os
 import sys
 import threading
+import uuid
 import urllib.error
 import urllib.request
 
@@ -119,7 +121,8 @@ def _backlog():
 
 
 class Bridge(QObject):
-    done = Signal(bool, object)
+    done = Signal(str, bool, object)      # (요청 id, 성공, /chat 답)
+    stopped = Signal(str, bool, object)   # (요청 id, 성공, /cancel 답)
     news = Signal(bool, object, bool)     # (성공, /news 답, 버튼으로 바꾼 것인가)
 
 
@@ -187,6 +190,8 @@ class ChatWindow(QWidget):
         self.setStyleSheet(f"background:{BG}; color:{FG};")
         self._busy = False
         self._pending = None          # 대답을 채워 넣을 말풍선
+        self._rid = None              # 지금 기다리는 /chat 요청 id — Esc 로 멈추면 늦게 온 답은 버린다
+        self._stopping = False        # /cancel 답 기다리는 중(Esc 연타로 겹쳐 안 보내게)
         self._secs = 0
         self._up = None               # 데몬에 붙나 — None = 아직 모름(_check_daemon 이 처음 채운다)
 
@@ -267,10 +272,11 @@ class ChatWindow(QWidget):
 
         self.btn.clicked.connect(self.send)
         self.input.send.connect(self.send)
-        QShortcut(QKeySequence("Esc"), self, activated=self.input.clear)
+        QShortcut(QKeySequence("Esc"), self, activated=self._esc)
 
         self.bridge = Bridge()
         self.bridge.done.connect(self._arrived)
+        self.bridge.stopped.connect(self._stop_arrived)
         self.bridge.news.connect(self._news_arrived)
         self.tick = QTimer(self)
         self.tick.timeout.connect(self._tick)
@@ -390,9 +396,54 @@ class ChatWindow(QWidget):
         self._busy = True
         self.btn.setEnabled(False)
         self._secs = 0
-        self.status.setText("생각 중… 0초")
+        self._stopping = False
+        self.status.setText("생각 중… 0초 · Esc 멈춤")
         self.tick.start(1000)
-        threading.Thread(target=self._worker, args=(text,), daemon=True).start()
+        self._rid = uuid.uuid4().hex[:12]
+        threading.Thread(target=self._worker, args=(text, self._rid), daemon=True).start()
+
+    def _esc(self):
+        """생각 중이면 보낸 말을 멈추고, 아니면 입력 비우기(예전 그대로)."""
+        if not self._busy:
+            self.input.clear()
+            return
+        if self._stopping:
+            return
+        # ★데몬이 '멈춤' 이라고 답한 뒤에만 멈춤으로 그린다 — 예전엔 /cancel 이 안 닿아도 바로 '멈춤' 으로 그려서
+        #   계산은 계속 돌고 답만 숨었다. 못 닿으면 생각 중 그대로 두고 Esc 로 다시 멈출 수 있게.
+        rid = self._rid
+        self._stopping = True
+        self.status.setText("멈추는 중…")
+
+        def run():
+            ok, res = _post("/cancel", {"id": rid}, timeout=10)
+            self.bridge.stopped.emit(rid, ok, res)
+        threading.Thread(target=run, daemon=True).start()
+
+    def _stop_arrived(self, rid, ok, res):
+        if rid != self._rid:
+            return                                # 그 사이 답이 먼저 와서 이미 그렸다
+        self._stopping = False
+        if ok and isinstance(res, dict) and res.get("ok"):
+            self._mark_stopped()
+        elif ok and isinstance(res, dict) and res.get("state") == "done":
+            self.status.setText("못 멈춤 — 답이 이미 다 됐다")   # 답은 /chat 으로 곧 온다(_arrived)
+        else:
+            self._bubble(f"못 멈췄다 — {res}  (Esc 로 다시)", "sys")
+            self.status.setText(f"생각 중… {self._secs}초 · Esc 멈춤")
+
+    def _mark_stopped(self):
+        self.tick.stop()
+        self._rid = None                          # 늦게 오는 답은 _arrived 가 버린다
+        self._stopping = False
+        if self._pending is not None:
+            self._pending.setText("(멈춤 — 이 말은 대화 기록에서도 뺐다)")
+            self._pending.setStyleSheet(f"color:{SUB}; font-size:12px; padding:9px 12px;")
+            self._pending = None
+        self.status.setText("멈춤")
+        self._busy = False
+        self.btn.setEnabled(True)
+        self.input.setFocus()
 
     def _toggle_speak(self):
         self.speak = not self.speak
@@ -458,15 +509,23 @@ class ChatWindow(QWidget):
                 self._bubble(f"소식 듣기 못 바꿈 — {res}", "sys")
         self._paint_news()
 
-    def _worker(self, text):
-        ok, res = _post("/chat", {"text": text, "speak": self.speak})
-        self.bridge.done.emit(ok, res)
+    def _worker(self, text, rid):
+        ok, res = _post("/chat", {"text": text, "speak": self.speak, "id": rid})
+        self.bridge.done.emit(rid, ok, res)
 
     def _tick(self):
         self._secs += 1
-        self.status.setText(f"생각 중… {self._secs}초")
+        if not self._stopping:
+            self.status.setText(f"생각 중… {self._secs}초 · Esc 멈춤")
 
-    def _arrived(self, ok, res):
+    def _arrived(self, rid, ok, res):
+        if rid != self._rid:
+            return                                # Esc 로 멈춘 요청의 늦은 답 — 이미 '멈춤' 으로 그렸다
+        if ok and isinstance(res, dict) and res.get("cancelled"):
+            self._mark_stopped()                  # /cancel 답보다 /chat 의 '멈춤' 이 먼저 왔다
+            return
+        self._rid = None
+        self._stopping = False
         self.tick.stop()
         if ok:
             reply = (res.get("reply") or res.get("error") or "(빈 응답)").strip()

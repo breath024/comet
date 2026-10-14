@@ -3,7 +3,7 @@
 #  COMET 데몬 — HTTP 서버 (표준 라이브러리만, 의존성 0)
 #   상주하며 /chat 요청을 처리. 같은 와이파이의 폰 브라우저로 바로 접속.
 #   GET  /      → 웹 채팅 페이지
-#   POST /chat  → {"text":"..."} → {"reply":"..."}
+#   POST /chat  → {"text":"..."} → {"reply":"..."}   (id 를 실으면 POST /cancel {"id"} 로 멈출 수 있다)
 #  음성은 PC 로컬(run.bat)에서. 데몬은 텍스트 전용 v1.
 #  주의: LAN에 인증 없이 열림 — 집 와이파이 내 사용 전제. 외부 노출 시 터널+인증 필요.
 # ═══════════════════════════════════════════════════════════════
@@ -392,6 +392,14 @@ STATIC = _load_static()
 _speak_lock = threading.Lock()
 _news_lock = threading.Lock()
 
+# 대화창 Esc = 보낸 말 멈추기(10/15) — 대화창이 /chat 에 id 를 실어 보내면 그 요청만 끊을 수 있다.
+#   ★comet.CANCEL 은 말걸기 창(Alt 두 번)과 같이 쓰는 스위치라, 지금 줄 안에서 도는 게 그 id 일 때만 켠다
+#     (폰·텔레그램·말걸기 차례에 대화창 Esc 가 남의 생성을 끊으면 안 된다).
+_cancel_lock = threading.Lock()
+_chat_now = None              # 지금 _lock 안에서 도는 대화창 요청 id
+_chat_waiting = set()         # _lock 앞에 줄 서 있는 대화창 요청 id
+_chat_dropped = set()         # 줄 서 있는 사이 Esc 로 거둔 id — 차례가 와도 안 돌린다
+
 
 def _speak_async(text):
     """대답을 소리로 읽어준다 — 별도 스레드.
@@ -451,7 +459,7 @@ class Handler(BaseHTTPRequestHandler):
         return bool(tok) and hmac.compare_digest(tok, TOKEN)
 
     def do_POST(self):
-        if self.path not in ("/chat", "/tts", "/imgsearch", "/news"):
+        if self.path not in ("/chat", "/tts", "/imgsearch", "/news", "/cancel"):
             self._send(404, json.dumps({"error": "not found"}))
             return
         if not self._authorized():
@@ -466,12 +474,17 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/news":
             self._handle_news()
             return
+        # /cancel: 대화창 Esc — 이것도 줄에 안 선다(줄 안에서 생각 중인 걸 끊으러 오니까)
+        if self.path == "/cancel":
+            self._handle_cancel()
+            return
 
         try:
             length = int(self.headers.get("Content-Length", 0))
             _body = json.loads(self.rfile.read(length).decode("utf-8"))
             text = (_body.get("text") or "").strip()
             want_speak = bool(_body.get("speak"))     # PC 대화창만 보낸다(폰은 /tts 로 따로)
+            rid = str(_body.get("id") or "")          # 대화창만 — 있으면 Esc 로 멈출 수 있는 요청
         except Exception:
             self._send(400, json.dumps({"error": "bad request"}))
             return
@@ -491,12 +504,50 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         # /chat
+        global _chat_now
         print(f"\n[요청] {text}")
+        if rid:
+            with _cancel_lock:
+                _chat_waiting.add(rid)
         with _lock:
+            with _cancel_lock:
+                _chat_waiting.discard(rid)
+                dropped = rid in _chat_dropped
+                _chat_dropped.discard(rid)
+                if rid and not dropped:
+                    _chat_now = rid
+            if dropped:
+                print("  [Esc] 차례 오기 전에 거둠 — 안 돌림")
+                self._send(200, json.dumps({"reply": "", "cancelled": True}))
+                return
+            n = len(_comet.history.msgs)
             try:
-                reply = _comet.respond(text, speak=False) or ""
+                if rid:
+                    # 멈추면 None — 이 턴은 대화 기록에서도 빠진다(잘못 친 말을 코멧이 기억하지 않게)
+                    reply = _comet.respond_cancelable(text)
+                else:
+                    reply = _comet.respond(text, speak=False) or ""
             except Exception as e:
                 reply = f"[오류] {e}"
+            finally:
+                with _cancel_lock:
+                    _chat_now = None
+                    stopped = rid in _chat_dropped      # respond 는 원래도 None 을 줄 때가 있다 — 멈춤 여부는 /cancel 로 가린다
+                    _chat_dropped.discard(rid)
+            if stopped:
+                # ★respond_cancelable 이 CANCEL 을 본 뒤(답·기록 저장까지 끝난 뒤)에 /cancel 이 오면 기록이 남는다 —
+                #   /cancel 엔 '멈춤' 이라고 답했으니 여기서 마저 지운다. 늦게 켜진 CANCEL 도 꺼야 다음 사람 답이 안 끊긴다.
+                comet.CANCEL.clear()
+                if len(_comet.history.msgs) > n:
+                    del _comet.history.msgs[n:]
+                    try:
+                        _comet.history.save()
+                    except Exception:
+                        pass
+                print("  [Esc] 대화창에서 멈춤 — 이 턴은 기록에서 뺌")
+                self._send(200, json.dumps({"reply": "", "cancelled": True}))
+                return
+            reply = reply or ""
             # 모델 답은 respond 가 「COMET: …」로 이미 찍는다(대화 기록에도 들어감). 명령 답(업그레이드 · 할일 …)은
             # 기록에 안 들어가고 콘솔에도 안 나와서 [요청] 줄만 덩그러니 남았다(10/14) — 그것만 찍는다.
             last = (_comet.history.msgs[-1:] or [{}])[0]
@@ -530,6 +581,30 @@ class Handler(BaseHTTPRequestHandler):
             self._send(500, json.dumps({"error": str(e)}, ensure_ascii=False))
             return
         self._send(200, json.dumps(st, ensure_ascii=False))
+
+    def _handle_cancel(self):
+        """{"id": 대화창 요청 id} — 생각 중이면 생성을 끊고(comet.CANCEL), 아직 줄 서 있으면 차례가 와도 안 돌린다.
+           ★모델 스트림은 바로 멈추지만 도구·클라우드 길은 끝까지 돈 뒤 버려진다(답은 안 보내고 기록에서도 뺀다)."""
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            rid = str(json.loads(self.rfile.read(length).decode("utf-8") or "{}").get("id") or "")
+        except Exception:
+            self._send(400, json.dumps({"error": "bad request"}))
+            return
+        if not rid:
+            self._send(400, json.dumps({"error": "no id"}))
+            return
+        with _cancel_lock:
+            if rid == _chat_now:
+                comet.CANCEL.set()
+                state = "stopping"
+            elif rid in _chat_waiting:
+                state = "dropped"
+            else:
+                state = "done"                      # 이미 답까지 끝났다(또는 모르는 id) — 못 멈춘다, 답은 /chat 으로 간다
+            if state != "done":
+                _chat_dropped.add(rid)              # 도는 중이면 끝난 뒤 '멈춤' 으로(기록도 뺌), 줄 서 있으면 안 돌림
+        self._send(200, json.dumps({"ok": state != "done", "state": state}))
 
     def _handle_imgsearch(self):
         try:
