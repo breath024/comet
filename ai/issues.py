@@ -1682,6 +1682,88 @@ SOURCES = {   # 소스별 생존 확인(자가점검용) — 0건이 며칠 이�
     "클리앙": lambda: src_clien(topic=None),
 }
 
+# 소스 생존 하루 한 번(데몬 13시 업그레이드 제안 때) — {"date": 마지막 점검일, "sources": {이름: {ok: 마지막 성공일, err: 오류 한 줄, dead: 죽어 있음, told: 죽음 알림 보냄, back: 되살아남 알림 못 보냄}}}
+SOURCE_HEALTH_FILE = os.path.join(_DIR, "logs", "source_health.json")
+_health_lock = threading.Lock()
+
+
+def check_sources(log=print, force=False):
+    """SOURCES 를 다 불러 상태 파일에 남기고, 「전엔 됐는데 이번에 0건 · 오류」인 소스만 모아 텔레그램 한 통.
+       이미 알린 소스는 되살아날 때까지 다시 안 알리고, 되살아나면 한 줄. 전부 실패면 네트워크 끊김으로 보고 안 알린다.
+       하루 한 번(force 면 그래도) — 날짜가 같으면 그냥 돌아간다."""
+    if not _health_lock.acquire(blocking=False):
+        return None
+    try:
+        today = datetime.now().strftime("%Y-%m-%d")
+        st = _load(SOURCE_HEALTH_FILE, {})
+        if not force and st.get("date") == today:
+            return None
+        srcs = st.setdefault("sources", {})
+        fails = {}
+        for name, fn in SOURCES.items():
+            try:
+                n = len(fn())
+                err = "" if n else "0건"
+            except Exception as e:
+                err = str(e).strip().splitlines()[0][:100] if str(e).strip() else type(e).__name__
+            if err:
+                fails[name] = err
+        st["date"] = today
+        all_down = len(fails) == len(SOURCES)
+        # dead = 지금 죽어 있음(점검 결과) · told = 죽음을 텔레그램으로 알렸음 · back = 되살아남 알림 아직 못 보냄
+        #  ★알림 완료는 발송 성공 뒤에만 적는다 — 먼저 적으면 발송 실패 때 되살아날 때까지 영영 안 알린다
+        for name in SOURCES:
+            s = srcs.setdefault(name, {"ok": "", "err": "", "dead": False})
+            s.setdefault("told", s.get("dead", False))   # told 없던 옛 파일 — 그땐 dead 가 '알렸음'이었다
+            if name not in fails:
+                if s.get("told"):
+                    s["back"] = True
+                s.update(ok=today, err="", dead=False, told=False)
+                continue
+            s["err"] = fails[name]
+            if all_down:                  # 네트워크 끊김 — 죽었다고 치지 않는다
+                continue
+            if s.get("ok"):               # 한 번도 된 적 없는 소스는 '죽음' 아님
+                s["dead"] = True
+                if s.pop("back", False):  # 되살아남을 못 알린 채 또 죽음 — 호윤이 아는 건 여전히 '죽음'이라 그대로 둔다
+                    s["told"] = True
+        died = [n for n in SOURCES if srcs[n].get("dead") and not srcs[n].get("told")]
+        back = [n for n in SOURCES if srcs[n].get("back")]
+        os.makedirs(os.path.dirname(SOURCE_HEALTH_FILE), exist_ok=True)
+        _save(SOURCE_HEALTH_FILE, st)
+        if all_down:
+            log(f"[이슈] 소스 점검 — {len(SOURCES)}개 전부 실패, 네트워크 끊김으로 보고 안 알림")
+            return st
+        log(f"[이슈] 소스 점검 — 실패 {len(fails)}/{len(SOURCES)} · 알릴 죽음 {len(died)} · 되살아남 {len(back)}")
+        lines = []
+        if died:
+            lines.append(f"이슈 소스 {len(died)}개가 죽었어 (사이트 구조 바뀜 의심)")
+            lines += [f"· {n} — 마지막 성공 {srcs[n]['ok']} · {srcs[n]['err']}" for n in died]
+        lines += [f"· {n} 되살아남" for n in back]
+        if lines:
+            try:
+                import notify
+                r = notify.send("📡 " + "\n".join(lines), html_mode=False)
+            except Exception as e:
+                r = {"ok": False, "msg": str(e)}
+            if r.get("ok"):
+                for n in died:
+                    srcs[n]["told"] = True
+                for n in back:
+                    srcs[n].pop("back", None)
+                _save(SOURCE_HEALTH_FILE, st)
+            else:                         # 못 보낸 건 그대로 남아 다음 점검 때 다시 보낸다
+                log(f"[이슈] 소스 점검 텔레그램 실패 — 다음 점검 때 다시: {r.get('msg')}")
+        return st
+    finally:
+        _health_lock.release()
+
+
+def dead_sources():
+    """알린 뒤 아직 안 살아난 소스 이름들(업그레이드 상태 한 줄용)."""
+    st = _load(SOURCE_HEALTH_FILE, {})
+    return [n for n, s in (st.get("sources") or {}).items() if s.get("dead")]
+
 
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8")

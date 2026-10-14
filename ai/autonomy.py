@@ -937,6 +937,10 @@ class UpgradeMode(_Mode):
                 today = datetime.now().strftime("%Y-%m-%d")
                 if self.cfg.get("last_date") == today or datetime.now().hour < hour:
                     continue
+                # 이슈 소스 생존 점검도 같이 — 소스 13개 부르는 데 수십 초라 따로 돈다(하루 한 번은 check_sources 가 지킨다)
+                import issues
+                threading.Thread(target=issues.check_sources, kwargs={"log": self.log},
+                                 name="source-health", daemon=True).start()
                 upgrade.propose(push=True, log=self.log)
                 self.cfg["last_date"] = today     # 제안할 게 없어도 하루 한 번만 본다
                 if self.save_fn:

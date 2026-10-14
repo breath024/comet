@@ -794,6 +794,12 @@ def status():
     if st.get("last_applied"):
         la = st["last_applied"]
         lines.append(f"마지막 적용: {la['title']} ({la['at']} · {la['commit'][:7]})")
+    try:                                          # 13시 소스 점검 결과(issues.check_sources)
+        import issues
+        dead = issues.dead_sources()
+        lines.append(f"죽은 소스 {len(dead)}개" + (f"({' · '.join(dead)})" if dead else ""))
+    except Exception:
+        pass
     lines.append("명령: 업그레이드 제안 · 1~3 · 요청 <내용> · 보기 · 적용 · 버려 · 다시 · 되돌리기")
     return "\n".join(lines)
 

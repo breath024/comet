@@ -26,7 +26,7 @@
 | `onlymoney_analyst.py` | Only Money 9단 파이프라인 분석 (포트·시세·심리) |
 | `autonomy.py` | 자율/상주 모드 (먼저 말 걸기·부르면 듣기) |
 | `notify.py` | 텔레그램 전송 (자동 브리핑/뉴스 + "텔레그램으로 보내줘" 온디맨드) |
-| `issues.py` | AI·경제 이슈 알림 — 뉴스·커뮤니티 수집 → 강도(굵직/볼만함/잔잔) → 배너+음성. "그거 내용 봐봐" = `detail_of_last()`. `python issues.py --sources` = 소스 생존 확인 |
+| `issues.py` | AI·경제 이슈 알림 — 뉴스·커뮤니티 수집 → 강도(굵직/볼만함/잔잔) → 배너+음성. "그거 내용 봐봐" = `detail_of_last()`. `python issues.py --sources` = 소스 생존 확인(데몬은 매일 13시 업그레이드 제안 때 `check_sources()` → `logs/source_health.json`, 죽은 · 되살아난 소스만 텔레그램) |
 | `toast.py` | 화면 위 가운데 알약형 배너 (별도 프로세스, 포커스 안 뺏음) |
 | `issue_box.py` | 이슈 접수함 — memory 테이블 kind='issue', 바뀔 때마다 `ISSUES.md` 로 내보냄 |
 | `todo_box.py` | 할일·일정 창구 — memory 테이블 kind='todo' + `due`·`src` 컬럼. `할일 …`/`일정` 명령(모델 안 거침), 프로젝트 자동 태깅, 바뀌면 `TODO.md` 내보냄, 아침 읊기 `digest()`/`speech()` |
