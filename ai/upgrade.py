@@ -20,6 +20,11 @@
 검토 지적이 남은 채 「적용 기다림」이면 「업그레이드 고쳐」 · 「이거 수정해」로 그 지적만 한 번 더 고친다(_fix_left —
 10/14 호윤이 「이거 수정해」 했는데 대화로 흘러 안 됨). 고친 건 복사본에 커밋을 하나 더 얹고, 적용은 base..commit 을 통째로.
 명령: 업그레이드 [상태|제안|1~3|요청 <내용>|보기|고쳐|적용|버려|다시|되돌리기]
+
+닥터(10/15 호윤 「버그 터지면 코멧 닥터로 돌려서 고칠 수 있게」):
+  데몬이 떠 있는데 이상하면 「닥터 <증상>」 → doctor() — 증상 · 최근 오류 · 최근 반영한 업그레이드를 묶어 고치게(적용은 그대로 「업그레이드 적용」).
+  데몬이 안 뜨거나 계속 죽으면 doctor.py(데몬 바깥 · run_daemon.bat 이 띄움)가 방금 적용한 업그레이드를 되돌리거나
+  heal() 로 고치게 하고, 반영은 데몬 창에서 호윤이 y 를 쳐야 한다.
 """
 import datetime as dt
 import glob
@@ -304,7 +309,8 @@ EDIT_SYS = """너는 COMET(호윤의 상주 비서 AI) 코드를 고치는 개�
 규칙
 - 먼저 CLAUDE.md · 작업 유의사항.md 에서 관련 부분, 고칠 파일을 읽고 나서 고쳐라.
 - 요청에 필요한 만큼만. 주변 코드 말투(한국어 주석 밀도 · 이름 · 짜임)를 따른다.
-- 건드리지 말 것: HANDOFF.md · ISSUES.md · TODO.md · logs/ · profile/ · 키 · 토큰 · *_config.json, 페르소나 끝의 민감 개인사 가드레일.
+- 건드리지 말 것: HANDOFF.md · ISSUES.md · TODO.md · logs/ · profile/ · 키 · 토큰 · *_config.json, 페르소나 끝의 민감 개인사 가드레일,
+  doctor.py · run_daemon.bat(데몬이 죽으면 되살리는 쪽 — 같이 깨지면 안 된다).
 - 패키지 설치 · 프로세스 종료 · 데몬 재시작 · 네트워크 발송 금지. 고칠 수 없거나 고칠 필요가 없으면 아무것도 바꾸지 말고 이유만 써라.
 - 끝나면 맨 끝에 이 모양으로:
 요약: (한 줄)
@@ -818,7 +824,7 @@ def _push(title, body):
 
 
 # ── 명령 ─────────────────────────────────────────────
-REFUSE = "업그레이드 시작 · 적용 · 되돌리기는 텔레그램에선 안 해 — PC 앞(콘솔이나 폰 웹)에서. 「업그레이드 상태 · 보기」는 여기서도 돼."
+REFUSE = "업그레이드 시작 · 적용 · 되돌리기 · 닥터는 텔레그램에선 안 해 — PC 앞(콘솔이나 폰 웹)에서. 「업그레이드 상태 · 보기」는 여기서도 돼."
 
 
 # 제안 뒤 「업그레이드」라는 말 없이 「해」 — 10/13 텔레그램 「바로 패치해」가 대화로 흘러 로컬 · 클로드가 「못 한다」만 했다
@@ -878,7 +884,68 @@ HOWTO = ("업그레이드는 한 번에 하나씩 돌아(복사본이 하나라�
          "· 제안 전부 한꺼번에: 제안 직후 「바로 고쳐」(제안이 6시간 안이고 도는 게 없을 때)\n"
          "· 하나씩: 「업그레이드 1」 → 끝나면 「업그레이드 적용」(데몬이 스스로 껐다 켬) → 「업그레이드 2」 …\n"
          "· 검토 지적이 남았으면 「업그레이드 고쳐」, 내용은 「업그레이드 보기」, 그만은 「업그레이드 버려」\n"
-         "· 시작 · 고쳐 · 적용은 PC 앞(대화창 · 폰 웹)에서만 — 텔레그램은 상태 · 보기만")
+         "· 코멧이 이상하면 「닥터 <증상>」 — 최근 오류 · 최근 업그레이드까지 묶어 고치게 해\n"
+         "· 시작 · 고쳐 · 적용 · 닥터는 PC 앞(대화창 · 폰 웹)에서만 — 텔레그램은 상태 · 보기만")
+
+
+# ── 닥터 ─────────────────────────────────────────────
+DOCTOR = re.compile(r"(?:코멧\s*)?닥터(?:\s+(.*)|\s*)$", re.S)
+
+
+def _doctor_request(symptom, crash=""):
+    """닥터가 고칠 사람에게 줄 요청 — 증상 + 최근 오류 + 최근 반영한 업그레이드(원인일 수 있다) diff.
+       클로드는 --restricted 라 git 을 못 부르니 diff 를 글로 넣어 준다."""
+    mat = _material()
+    st = _load()
+    applied = [h for h in st.get("history", []) if h.get("status") == "적용" and h.get("commit")][-3:]
+    ups = []
+    for h in reversed(applied):
+        ups.append(f"- {h['at']} {h['title']} ({h['commit'][:7]})\n"
+                   + _git("show", "--stat", "--format=", h["commit"])[1].strip()[-600:])
+    diff = ""
+    la = st.get("last_applied")
+    if la:
+        diff = _git("diff", la.get("from") or la["commit"] + "~1", la["commit"])[1][:6000]
+    return ("[닥터] 코멧에 버그가 났다. 원인을 찾아 고쳐라. 증상과 상관없는 곳은 건드리지 말 것.\n"
+            "최근 업그레이드가 원인이면 그 부분을 고치거나, 고치기 어려우면 그 부분만 원래대로 돌려라.\n\n"
+            f"[호윤이 말한 증상]\n{symptom or '(없음 — 아래 오류 기준)'}\n\n"
+            + (f"[데몬이 죽기 직전 로그]\n{crash[-4000:]}\n\n" if crash else "")
+            + "[최근 사흘 데몬 오류 — 횟수 · 예시]\n"
+            + ("\n".join(f"{n}번 · {e}" for n, e in mat["error_top"]) or "없음")
+            + "\n\n[최근 반영한 업그레이드 — 원인일 수 있음]\n" + ("\n".join(ups) or "없음")
+            + (f"\n\n[마지막 업그레이드 diff — {la['title']}]\n{diff}" if diff else ""))
+
+
+def doctor(symptom="", log=print):
+    """「닥터 <증상>」 — 업그레이드 작업 하나로 고치게 한다. 적용은 다른 업그레이드처럼 「업그레이드 적용」."""
+    msg = start(_doctor_request(symptom.strip()), "닥터: " + (symptom.strip() or "최근 오류")[:24], log)
+    return ("🩺 닥터 " + msg) if msg.startswith("업그레이드 시작") else msg
+
+
+def heal(crash, log=print):
+    """doctor.py 가 데몬이 계속 죽을 때 부른다(데몬 밖 · 따로 띄운 파이썬). 고치고 → 내용을 이 창에 보여 주고 →
+       호윤이 y 를 쳐야 반영. 반영했으면 True."""
+    msg = start(_doctor_request("데몬이 켜자마자(또는 계속) 죽는다 — 아래 로그 참고", crash), "닥터: 데몬이 안 뜸", log)
+    log(msg)
+    if not msg.startswith("업그레이드 시작"):
+        return False
+    if _worker:
+        _worker.join()
+    j = _load().get("job") or {}
+    if j.get("status") != "ready":
+        log("[닥터] 못 고침: " + str(j.get("error") or j.get("step"))[:300])
+        return False
+    log("\n" + show() + "\n")
+    try:
+        yes = input("[닥터] 이 고친 걸 반영하고 데몬을 다시 띄울까? (y 를 치고 Enter · 아니면 그냥 Enter) ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        yes = ""
+    if yes != "y":
+        log("[닥터] 반영 안 함 — 복사본은 남겨 둠(데몬이 뜨면 「업그레이드 보기 · 적용 · 버려」)")
+        return False
+    out = apply()
+    log(out)
+    return out.startswith("반영했어")
 
 
 def _fix_pick(s):
@@ -898,6 +965,9 @@ def _fix_pick(s):
 def command(t, remote=False, log=print):
     """「업그레이드 …」 명령이나 제안 뒤 「바로 고쳐」 같은 말이면 답, 아니면 None(대화로 흘림 — 「업그레이드 어떻게 해?」 같은 말)."""
     s = t.strip()
+    m = DOCTOR.match(s)
+    if m and not GO_NO.search(m.group(1) or ""):      # 「닥터 스트레인지 봤어?」 같은 말은 대화로
+        return REFUSE if remote else doctor(m.group(1) or "", log)
     if not s.startswith("업그레이드"):
         if _fix_pick(s):
             return REFUSE if remote else fix_left(log)
@@ -947,3 +1017,8 @@ def command(t, remote=False, log=print):
             return "업그레이드 요청 <고칠 내용> — 예: 업그레이드 요청 할일 목록에 완료한 것도 회색으로 보여 줘"
         return start(req, None, log)
     return HOWTO + "\n\n" + status()
+
+
+if __name__ == "__main__":
+    if len(sys.argv) >= 3 and sys.argv[1] == "--heal":     # doctor.py 가 데몬이 계속 죽을 때 부른다
+        sys.exit(0 if heal(sys.argv[2]) else 1)

@@ -52,7 +52,8 @@ def _in_loop_bat():
                             f"(Get-CimInstance Win32_Process -Filter 'ProcessId={os.getppid()}').CommandLine"],
                            capture_output=True, text=True, encoding="utf-8", errors="replace",
                            timeout=20, creationflags=_flags())
-        return "run_daemon.bat" in (r.stdout or "").lower()
+        cl = (r.stdout or "").lower()
+        return "run_daemon.bat" in cl or "doctor.py" in cl      # doctor.py 가 75 를 받아 다시 띄운다(10/15)
     except Exception:
         return False
 
