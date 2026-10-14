@@ -495,6 +495,11 @@ class Handler(BaseHTTPRequestHandler):
                 reply = _comet.respond(text, speak=False) or ""
             except Exception as e:
                 reply = f"[오류] {e}"
+            # 모델 답은 respond 가 「COMET: …」로 이미 찍는다(대화 기록에도 들어감). 명령 답(업그레이드 · 할일 …)은
+            # 기록에 안 들어가고 콘솔에도 안 나와서 [요청] 줄만 덩그러니 남았다(10/14) — 그것만 찍는다.
+            last = (_comet.history.msgs[-1:] or [{}])[0]
+            if reply and not (last.get("role") == "assistant" and last.get("content") == reply):
+                print(f"COMET: {reply[:500]}" + (f" …(전체 {len(reply)}자)" if len(reply) > 500 else ""))
         self._send(200, json.dumps({"reply": reply}, ensure_ascii=False))
         if want_speak:
             _speak_async(reply)        # 글자를 먼저 보내고, 읽기는 뒤에서

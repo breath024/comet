@@ -718,7 +718,16 @@ class TalkMode(_Mode):
 #   ★한 PC 에 하나만 — 같은 봇 토큰을 두 곳이 기다리면 텔레그램이 409 로 서로 끊는다(데몬 + run.bat). 뮤텍스.
 #   ★꺼져 있는 동안 온 말은 STALE_SEC 안의 것만 답한다 — 몇 시간 전 질문에 뜬금없이 답하지 않게.
 #   답은 글로만(폰으로 물었으면 PC 앞에 없다 — 스피커로 안 읽는다). 생각하는 동안 '입력 중…', 오래 걸리면 한 줄 먼저.
+#   오간 말은 대화창에도 말풍선으로(issues.post_note — 소식과 같은 /news 길).
 # ═══════════════════════════════════════════════════════════════
+def _note(cat, text):
+    try:
+        import issues
+        issues.post_note(cat, text)
+    except Exception:
+        pass
+
+
 class TelegramMode(_Mode):
     name = "telegram"
     desc = "텔레그램으로 물으면 답함 (호윤 대화방만)"
@@ -792,10 +801,14 @@ class TelegramMode(_Mode):
         if not text:
             notify.send("지금은 글만 알아들어 — 사진·음성은 아직 못 받아.", html_mode=False)
             return
-        self.log(f"[텔레그램] 받음: {text[:60]}")
+        # 받은 말 · 답 전문을 콘솔과 대화창에도 — 예전엔 받은 말 60자 · 답 글자 수만 찍혀서 PC 앞에선 뭐가 오갔는지 몰랐다(10/14)
+        self.log(f"\n[텔레그램] 받음: {text[:500]}")
+        _note("tg_me", text)
         reply = self._answer(text)
         r = notify.send_long(reply)
+        self.log(f"[텔레그램] 답: {reply[:500]}" + (f" …(전체 {len(reply)}자)" if len(reply) > 500 else ""))
         self.log(f"[텔레그램] 답함 {len(reply)}자 · {r.get('parts')}통 — {r.get('msg', '')[:60]}")
+        _note("tg_ai", reply)
 
     def _run(self):
         import urllib.error

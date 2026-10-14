@@ -438,7 +438,13 @@ class ChatWindow(QWidget):
         if ok and isinstance(res, dict) and "on" in res:
             self.news_on = bool(res["on"])
             for e in res.get("feed") or []:                    # 새로 알린 소식 → 말풍선
-                self._bubble(e.get("text", ""), "news", e.get("level", 2))
+                cat = e.get("cat")
+                if cat == "tg_me":                             # 텔레그램으로 호윤이 한 말 · 코멧 답(10/14)
+                    self._bubble("📱 " + e.get("text", ""), "me").setTextFormat(Qt.PlainText)
+                elif cat == "tg_ai":
+                    self._bubble("📱 " + e.get("text", ""), "ai").setTextFormat(Qt.PlainText)
+                else:
+                    self._bubble(e.get("text", ""), "news", e.get("level", 2))
                 self._feed_last = max(self._feed_last or 0, int(e.get("id", 0)))
             if self._feed_last is None and isinstance(res.get("last"), int):
                 self._feed_last = res["last"]                  # 처음 물었을 땐 여기서부터

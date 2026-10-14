@@ -1432,6 +1432,17 @@ def _post_feed(cat, items):
         del FEED[:-FEED_KEEP]
 
 
+def post_note(cat, text):
+    """소식 말고 대화창에 띄울 글 — 텔레그램으로 오간 말(cat 'tg_me' · 'tg_ai', 10/14 호윤 「텔레그램에서 내가 무슨 말 했는지 안 보여」).
+       대화 기록엔 안 넣는다(위 이유 그대로) — 대화창이 /news 로 같이 받아 말풍선으로만 그린다."""
+    with _feed_lock:
+        fid = int(time.time() * 1000)
+        if FEED and fid <= FEED[-1]["id"]:
+            fid = FEED[-1]["id"] + 1
+        FEED.append({"id": fid, "cat": cat, "level": 2, "text": text})
+        del FEED[:-FEED_KEEP]
+
+
 def feed_after(after):
     """(after 보다 뒤에 쌓인 것들, 마지막 id). after=None 이면 처음 묻는 것 — 지난 건 안 주고 마지막 id 만."""
     with _feed_lock:
