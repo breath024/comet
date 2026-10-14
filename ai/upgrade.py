@@ -1011,11 +1011,15 @@ def _fix_pick(s):
 WISH_VERB = re.compile(r"(했|하|되|됐|나왔|보였|떴|알려\s*줬|있었|생겼)으면\s*(좋겠|해)"
                        r"|(넣어|추가해|만들어|바꿔|고쳐|없애|빼|줄여|늘려|키워)\s*(줘|줄래|주라|주면|봐)|기능\s*(넣|추가|만들)|버그")
 WISH_SELF = re.compile(r"코멧|너|니가|네가|기능|대화창|창에|텔레그램|알림|배너|말풍선|목소리|말걸기|브리핑|할\s*일|일정|소식|답")
-WISH_NO = re.compile(r"하지\s*마|말고|안\s*해도|취소|그만")
+# 요청 자체를 거두는 말만 — 「취소할 수 있게 넣어 줘」처럼 바라는 기능 안의 낱말을 잡으면 안 된다(10/15 04:00 그래서 놓침)
+WISH_NO = re.compile(r"(하지|넣지|바꾸지|고치지|만들지)\s*마")
+# 모델이 「제가 못 고친다」 한 뒤의 「너가 해야지」 「니가 고쳐」 — 바로 앞 말을 맡길지 묻는다(10/15 04:00)
+WISH_PUSH = re.compile(r"(너|니|네)가?\s*(해야지|해|고쳐|만들어|넣어|하라고|하면\s*되잖아)[.!~ ]*")
 WISH_YES = re.compile(r"(응|ㅇㅇ|ㅇ|어|웅|그래|좋아|맡겨|맡겨\s*줘|해|해\s*줘|고고|ㄱㄱ|ㄱ|오케이|ok|콜)[.!~ ]*", re.I)
 WISH_NAY = re.compile(r"(아니|아냐|ㄴㄴ|ㄴ|됐어|노|안\s*해|하지\s*마)[.!~ ]*")
 WISH_TTL = 600
 _wish = {}
+_prev = []                       # wish() 까지 온 바로 앞 말 [글, 시각] — 「너가 해야지」가 가리키는 것
 
 
 def _wish_pick(s):
@@ -1027,7 +1031,12 @@ def wish(t, remote=False):
     """코멧 다른 명령(할일 · 알림 · 두뇌 …)을 다 지나온 말만 comet.respond 가 모델에 넘기기 직전에 부른다 —
        「할일에서 장보기 빼 줘」 같은 명령을 가로채지 않게. 물을 거면 그 물음, 아니면 None."""
     s = t.strip()
-    if remote or not _wish_pick(s):
+    prev, _prev[:] = list(_prev), [s, time.time()]
+    if remote:
+        return None
+    if WISH_PUSH.fullmatch(s) and prev and time.time() - prev[1] < WISH_TTL and _wish_pick(prev[0]):
+        s = prev[0]
+    elif not _wish_pick(s):
         return None
     _wish.update(text=s, at=time.time())
     return f"이거 업그레이드로 맡길까? 「{s[:60]}」\n「응」이면 클로드가 고치고 아스트라가 검토해 — 통과하면 저절로 반영. 아니면 「아니」."
