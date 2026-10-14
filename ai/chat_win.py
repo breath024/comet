@@ -364,6 +364,8 @@ class ChatWindow(QWidget):
         self.sky.lower()
         self.scroll.viewport().installEventFilter(self)
         self._work = []                                       # 데몬이 /news 로 알려 준 '지금 하는 일'
+        self._stopped_at = 0.0                                # Esc 로 멈춘 시각 — 그 전에 보낸 /news 의 '대화' 는 버린다
+        self._news_sent = 0.0
 
         # ── 입력줄 ──
         foot = QWidget()
@@ -572,6 +574,7 @@ class ChatWindow(QWidget):
             self._pending.setText("(멈춤 — 이 말은 대화 기록에서도 뺐다)")
             self._pending.setStyleSheet(f"color:{SUB}; font-size:12px; padding:9px 12px;")
             self._pending = None
+        self._stopped_at = time.time()
         self.status.setText("멈춤")
         self._busy = False
         self._update_sky()
@@ -603,6 +606,7 @@ class ChatWindow(QWidget):
             ok, res = _post("/news", payload, timeout=30)
             self.bridge.news.emit(ok, res, toggled)
         self._news_busy = True
+        self._news_sent = time.time()
         threading.Thread(target=run, daemon=True).start()
 
     def _poll_news(self):
@@ -622,7 +626,8 @@ class ChatWindow(QWidget):
         self._link(ok or not str(res).startswith("[연결 안 됨]"))
         if ok and isinstance(res, dict) and "on" in res:
             self.news_on = bool(res["on"])
-            work = [w for w in (res.get("work") or []) if not (self._busy and w == "대화")]   # 내 답 기다리는 건 이미 앎
+            stale = self._news_sent < self._stopped_at           # Esc 전에 물은 답 — 그땐 내 말이 아직 돌고 있었다
+            work = [w for w in (res.get("work") or []) if not ((self._busy or stale) and w == "대화")]   # 내 답은 이미 앎
             if work != self._work:
                 self._work = work
                 self._update_sky()

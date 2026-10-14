@@ -426,7 +426,9 @@ def _work_now():
        (10/15 호윤 「뭔가 하고 있는 중일 때 배경에 혜성 … 그러면 작동하고 있는 거 알 듯」).
        3초마다 불리니 가벼운 것만 본다 — 대화 줄 · 회의 · 이 데몬 안에서 도는 업그레이드."""
     work = []
-    if _lock.locked():
+    with _cancel_lock:                             # Esc 로 멈춘 대화창 요청이 남은 계산을 마저 도는 중이면 일로 안 친다
+        stopped = _chat_now is not None and _chat_now in _chat_dropped     # (10/15 Esc 뒤에도 혜성이 남았다)
+    if _lock.locked() and not stopped:
         work.append("대화")                        # 대화창 · 텔레그램 · 말걸기 · 폰 중 하나가 답 만드는 중
     if getattr(_comet, "_debating", False):
         work.append("회의")
