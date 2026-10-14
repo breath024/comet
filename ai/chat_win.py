@@ -38,6 +38,7 @@ TOKEN_FILE = os.path.join(HERE, "daemon_token.txt")
 HISTORY = os.path.join(HERE, "comet_history.json")
 STATE = os.path.join(HERE, "chat_win_state.json")   # 창 크기·위치만
 ICON = os.path.join(HERE, "web", "icon-192.png")
+APP_ID = "Hoyoon.COMET.Chat"   # 작업표시줄 묶음 이름 — COMET 켜기.lnk 의 System.AppUserModel.ID 와 같아야 한다
 
 BACKLOG = 20          # 열 때 보여줄 지난 대화 수(메시지 개수)
 TIMEOUT = 600         # 27b·분석이면 몇 분 걸린다 — 넉넉히
@@ -502,6 +503,12 @@ class ChatWindow(QWidget):
 
 
 def main():
+    # 작업표시줄에서 pythonw 덩어리가 아니라 COMET 으로 잡히게 — 바로가기(COMET 켜기.lnk)에도 같은 ID 를 박았다
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
+    except Exception:
+        pass          # 아이콘 문제일 뿐이니 실패해도 창은 그대로 뜬다
     app = QApplication(sys.argv)
     app.setApplicationName("COMET")
     if _wake_running():                    # 이미 떠 있으면 그 창을 앞으로 — 새 창은 안 띄운다
