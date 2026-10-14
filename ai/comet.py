@@ -800,6 +800,38 @@ def _sched_window(t):
     return 7, "시각 있는 일정(이레 안)"
 
 
+_DONE_NOUN = re.compile(r"스케줄|일정|할\s*일|투두|리마인더")     # 「알림」은 소식 알림 명령과 겹쳐서 뺌
+_DONE_VERB = re.compile(r"지워|지우|삭제|없애|빼\s*줘|완료|끝났|끝냈|이미\s*했|다\s*했|했음|했어")
+
+
+def _todo_done_by_words(t):
+    """「○○ 스케줄 지워줘 이미 했음」 → 열린 할일 중 낱말이 제일 많이 겹치는 하나를 닫는다.
+       하나로 못 고르면 목록을 보여 주고 번호를 묻는다. 할일 · 일정 말이 아니면 None(대화로)."""
+    if len(t) > 80 or "?" in t or not (_DONE_NOUN.search(t) and _DONE_VERB.search(t)):
+        return None
+    import todo_box
+    with todo_box._conn() as c:
+        rows = c.execute("SELECT id, content FROM memory WHERE kind='todo' AND status='open'").fetchall()
+    if not rows:
+        return "열린 할일 · 일정이 없어 — 이미 닫혀 있어. (`할일 전체` 로 닫힌 것까지 볼 수 있어)"
+    words = [w for w in re.split(r"[\s,.!~]+", _DONE_VERB.sub(" ", _DONE_NOUN.sub(" ", t))) if len(w) >= 2]
+
+    def score(content):                   # 조사가 붙은 말(「전화하는거」)도 앞부분(「전화」)이 맞으면 친다
+        s = 0
+        for w in words:
+            for k in range(len(w), 1, -1):
+                if w[:k] in content:
+                    s += k
+                    break
+        return s
+    ranked = sorted(((score(r["content"]), r) for r in rows), key=lambda x: -x[0])
+    best = ranked[0]
+    if best[0] >= 2 and (len(ranked) == 1 or ranked[1][0] < best[0]):
+        return todo_box.complete(best[1]["id"], "말로 닫음: " + t[:40])["msg"] + f"\n(잘못 닫았으면 「할일 다시 {best[1]['id']}」)"
+    return ("어느 걸 닫을지 하나로 못 골랐어 — 「할일 완료 번호」로 말해 줘.\n"
+            + "\n".join(f"#{r['id']} {r['content'][:50]}" for _, r in ranked[:5]))
+
+
 def _with_calendar(todo_text, days=7, force=False):
     """'일정' 화면 위에 구글 캘린더(비공개 ICS) 약속을 붙인다.
 
@@ -1105,6 +1137,11 @@ class Comet:
                     ans = _with_calendar(ans)   # 구글 캘린더(비공개 ICS) 약속을 위에 붙인다
                     self._sched_at = time.time()   # 이 뒤의 되물음도 같은 창구로 받는다
                 return ans
+        # ── 「고객센터 전화하는 거 스케줄 지워줘 이미 했음」 — 할일 · 일정 닫기를 말로 ──
+        #   10/14 07:05 이 말이 light 모델로 가서 「삭제하겠습니다」만 하고 아무것도 안 지웠다(도구 없음).
+        ans = _todo_done_by_words(t)
+        if ans is not None:
+            return ans
         # ── 이슈 알림(AI·경제 강도별) — 로직은 autonomy.issues_command / issues.py ──
         if low == "알림" or low.startswith(("알림ai", "알림에이아이", "알림경제", "알림끔", "알림꺼",
                                              "알림켜", "알림켬", "알림온", "알림on", "알림주기",
