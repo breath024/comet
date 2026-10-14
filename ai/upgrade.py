@@ -17,7 +17,9 @@
 
 안전: 클로드는 --restricted(작업 폴더 밖 파일 못 건드림 · 명령 실행 도구 없음), 아스트라는 workspace-write 샌드박스.
       시작 · 적용 · 되돌리기는 텔레그램에서 온 말로는 안 함(remote_guard). 커밋에 Co-Authored-By 안 붙임(호윤 규칙).
-명령: 업그레이드 [상태|제안|1~3|요청 <내용>|보기|적용|버려|다시|되돌리기]
+검토 지적이 남은 채 「적용 기다림」이면 「업그레이드 고쳐」 · 「이거 수정해」로 그 지적만 한 번 더 고친다(_fix_left —
+10/14 호윤이 「이거 수정해」 했는데 대화로 흘러 안 됨). 고친 건 복사본에 커밋을 하나 더 얹고, 적용은 base..commit 을 통째로.
+명령: 업그레이드 [상태|제안|1~3|요청 <내용>|보기|고쳐|적용|버려|다시|되돌리기]
 """
 import datetime as dt
 import glob
@@ -428,10 +430,85 @@ def _run_job(log=print):
         verdict = {True: "통과", False: "지적 남음", None: "판정 불명"}[review.get("ok")]
         _push(f"업그레이드 준비됨: {title}",
               f"{j.get('summary', '')[:500]}\n고친 쪽 {j.get('editor')} · 검토 {rv}({verdict}) · {test_msg[:80]}\n"
-              "PC 앞(콘솔 · 폰 웹)에서 「업그레이드 적용」 · 「업그레이드 보기」 · 「업그레이드 버려」")
+              + ("남은 지적은 「업그레이드 고쳐」로 한 번 더 고칠 수 있어.\n" if review.get("ok") is False else "")
+              + "PC 앞(콘솔 · 폰 웹)에서 「업그레이드 적용」 · 「업그레이드 보기」 · 「업그레이드 버려」")
     except Exception as e:
         log(f"[upgrade] 작업 오류: {e}")
         _finish("failed", f"작업 중 오류: {e}", log, keep_wt=True)
+
+
+def _fix_left(log=print):
+    """적용 기다리는 업그레이드의 남은 검토 지적만 한 번 더 고친다 — 복사본에 커밋 하나 더 얹는다(base..commit 은 그대로).
+       못 고치거나 시험이 깨지면 고친 것을 버리고 전 상태(적용 기다림)로 되돌린다 — 이미 준비된 걸 망치지 않게."""
+    j = _load()["job"]
+    title = j.get("title", "?")
+    rv = j.get("review") or {}
+    notes = list(j.get("notes") or [])
+    cwd = os.path.join(WT, SUB)
+    try:
+        editor = {v: k for k, v in NAMES.items()}.get(j.get("editor"), "claude")
+        fix = (f"{EDIT_SYS}\n\n[원래 요청]\n{j['request']}\n\n[이미 고친 것에 대한 검토 지적 — 이것만 고쳐라. "
+               f"지적이 틀렸다고 보면 고치지 말고 왜 틀렸는지 써라]\n{rv.get('by')} 검토 지적:\n{rv.get('text', '')}")
+        order = [editor] + [w for w in ORDER if w != editor]
+        fw, fout, ferrs = _first_ok(order, lambda w: (_set_job(step=f"남은 지적 고치는 중 — {NAMES[w]}"),
+                                                      _edit(w, fix, cwd))[1])
+        if fw is None:
+            notes.append("남은 지적 고치기 못 함 — " + " / ".join(ferrs))
+            _set_job(status="ready", step="적용 기다림", notes=notes)
+            _push(f"업그레이드 남은 지적 못 고침: {title}", "클로드 · 아스트라 둘 다 지금 못 씀 — 그대로 적용 기다림.\n"
+                  + " / ".join(ferrs)[:300])
+            return
+        changed = _changed()
+        if not changed:
+            notes.append(f"{NAMES[fw]}: 남은 지적 안 고침 — {_summary(fout)[:200]}")
+            _set_job(status="ready", step="적용 기다림", notes=notes)
+            _push(f"업그레이드 남은 지적 안 고침: {title}", _summary(fout)[:600])
+            return
+        tests_ok, test_msg = _tests(changed)
+        if not tests_ok:
+            _git("reset", "-q", cwd=WT)
+            _git("checkout", "-q", "--", ".", cwd=WT)          # 복사본의 안 커밋된 것만 — 진짜 코드 아님
+            notes.append("남은 지적 고친 것이 시험을 못 넘겨 버림: " + test_msg[:200])
+            _set_job(status="ready", step="적용 기다림", notes=notes)
+            _push(f"업그레이드 남은 지적 — 시험 실패로 버림: {title}", test_msg[:600] + "\n전 상태 그대로 적용 기다림.")
+            return
+        _set_job(step="검토 중")
+        review = _review(dict(j, request=j["request"]), fw)
+        code, out = _git("commit", "-q", "-m", f"코멧 업그레이드 — 검토 지적 고침: {title}", cwd=WT)
+        if code:
+            notes.append("남은 지적 커밋 실패: " + out.strip()[-200:])
+            _set_job(status="ready", step="적용 기다림", notes=notes)
+            return
+        notes.append(f"{NAMES[fw]}가 남은 지적 고침: {_summary(fout)[:200]}")
+        base = j.get("base") or (j["commit"] + "~1")
+        _set_job(status="ready", step="적용 기다림", commit=_git("rev-parse", "HEAD", cwd=WT)[1].strip(),
+                 review=review, notes=notes, tests=test_msg, tests_ok=True, finished=_now(),
+                 stat=_git("diff", "--stat", base, "HEAD", cwd=WT)[1].strip()[-1500:])
+        verdict = {True: "통과", False: "지적 남음", None: "판정 불명"}[review.get("ok")]
+        _push(f"업그레이드 남은 지적 고침: {title}",
+              f"{_summary(fout)[:400]}\n검토 {review.get('by') or '못 함'}({verdict})\n"
+              "PC 앞에서 「업그레이드 적용」 · 「업그레이드 보기」")
+    except Exception as e:
+        log(f"[upgrade] 남은 지적 고치기 오류: {e}")
+        notes.append(f"남은 지적 고치기 오류: {e}")
+        _set_job(status="ready", step="적용 기다림", notes=notes)
+
+
+def fix_left(log=print):
+    global _worker
+    with _lock:
+        st = _load()
+        j = st.get("job")
+        if not j or j["status"] != "ready":
+            return None
+        if (j.get("review") or {}).get("ok") is not False:
+            return f"남은 검토 지적이 없어({j['title']}) — 「업그레이드 적용」 하면 돼."
+        j.update(status="fixing", step="남은 지적 고치는 중", pid=os.getpid())
+        _save(st)
+    _worker = threading.Thread(target=_fix_left, kwargs={"log": log}, name="comet-upgrade-fix", daemon=True)
+    _worker.start()
+    return (f"남은 검토 지적 고치는 중: {j['title']}\n복사본에서만 고치고 다시 검토해 — 끝나면 배너 · 텔레그램으로 알려줄게. "
+            "진짜 코드엔 여전히 「업그레이드 적용」 해야 들어가.")
 
 
 def _to_waiting(errs, log):
@@ -523,7 +600,14 @@ def tick(log=print):
     j = st.get("job")
     if not j:
         return
-    if j["status"] == "waiting" and j.get("retry_at", "") <= _now():
+    if j["status"] == "fixing" and not _alive(j.get("pid")):
+        # 남은 지적 고치다 꺼짐 — 커밋 안 된 고친 것은 버리고 전 상태(적용 기다림)로. 다시 하려면 「업그레이드 고쳐」
+        _git("reset", "-q", cwd=WT)
+        _git("checkout", "-q", "--", ".", cwd=WT)
+        _set_job(status="ready", step="적용 기다림",
+                 notes=(j.get("notes") or []) + ["남은 지적 고치다 꺼짐 — 고치기 전 상태로 되돌림"])
+        log(f"[upgrade] 남은 지적 고치다 꺼진 것 — 적용 기다림으로 되돌림: {j['title']}")
+    elif j["status"] == "waiting" and j.get("retry_at", "") <= _now():
         log(f"[upgrade] 다시 시도: {j['title']}")
         _launch(log)
     elif j["status"] == "running" and not _alive(j.get("pid")):
@@ -563,19 +647,21 @@ def apply():
     j = st.get("job")
     if not j or j["status"] != "ready":
         return "적용할 업그레이드가 없어. " + status()
-    files = [p for p in _git("diff", "--name-only", j["commit"] + "~1", j["commit"])[1].splitlines() if p.strip()]
+    base = j.get("base") or (j["commit"] + "~1")      # 남은 지적 고친 커밋이 얹혀 있을 수 있다 — base..commit 통째로
+    files = [p for p in _git("diff", "--name-only", base, j["commit"])[1].splitlines() if p.strip()]
     dirty = _dirty_overlap(files)
     if dirty:
         return ("반영 못 함 — 이 파일에 커밋 안 된 다른 수정이 있어: " + ", ".join(dirty)
                 + "\n그 작업을 먼저 커밋하거나 정리하고 다시 「업그레이드 적용」.")
-    code, out = _git("cherry-pick", j["commit"])
+    pre = _git("rev-parse", "HEAD")[1].strip()
+    code, out = _git("cherry-pick", f"{base}..{j['commit']}")
     if code:
         _git("cherry-pick", "--abort")
         return "그새 같은 곳이 바뀌어서 충돌 — 진짜 코드는 그대로 뒀어. 「업그레이드 다시」 하면 지금 코드 기준으로 다시 고쳐."
     sha = _git("rev-parse", "HEAD")[1].strip()
     with _lock:
         st = _load()
-        st["last_applied"] = {"commit": sha, "title": j["title"], "at": _now()}
+        st["last_applied"] = {"commit": sha, "from": pre, "title": j["title"], "at": _now()}
         _history(st, j["title"], "적용", sha)
         st["job"] = None
         _save(st)
@@ -596,11 +682,12 @@ def revert():
         return "되돌릴 업그레이드가 없어."
     if _git("merge-base", "--is-ancestor", la["commit"], "HEAD")[0] != 0:
         return f"그 커밋({la['commit'][:7]})이 지금 코드에 없어 — 손으로 봐야 해."
-    files = [p for p in _git("diff", "--name-only", la["commit"] + "~1", la["commit"])[1].splitlines() if p.strip()]
+    frm = la.get("from") or (la["commit"] + "~1")      # 적용이 커밋 여러 개였으면 그 묶음 통째로
+    files = [p for p in _git("diff", "--name-only", frm, la["commit"])[1].splitlines() if p.strip()]
     dirty = _dirty_overlap(files)
     if dirty:
         return "되돌리기 못 함 — 이 파일에 커밋 안 된 다른 수정이 있어: " + ", ".join(dirty)
-    code, out = _git("revert", "--no-commit", la["commit"])
+    code, out = _git("revert", "--no-commit", f"{frm}..{la['commit']}")
     if code:
         _git("revert", "--abort")
         return f"되돌리다 충돌 — 그대로 뒀어. 손으로 봐야 해(커밋 {la['commit'][:7]})."
@@ -712,7 +799,7 @@ REFUSE = "업그레이드 시작 · 적용 · 되돌리기는 텔레그램에선
 
 
 # 제안 뒤 「업그레이드」라는 말 없이 「해」 — 10/13 텔레그램 「바로 패치해」가 대화로 흘러 로컬 · 클로드가 「못 한다」만 했다
-GO_STRONG = re.compile(r"패치|고쳐|고치|업글")
+GO_STRONG = re.compile(r"패치|고쳐|고치|업글|수정")
 GO_WEAK = re.compile(r"실행|진행|넘겨|돌려|시작|ㄱㄱ|고고")
 GO_CTX = re.compile(r"걔네|클로드|아스트라|제안|그거|바로|[1-9]\s*번|전부")
 GO_NO = re.compile(r"[?？]|어떻게|뭐|왜|말고|하지\s*마|안\s*해|나중|보류|취소|그만")
@@ -762,10 +849,33 @@ def _start_picks(nums, log=print):
     return msg
 
 
+HOWTO = ("업그레이드는 한 번에 하나씩 돌아(복사본이 하나라서).\n"
+         "· 제안 전부 한꺼번에: 제안 직후 「바로 고쳐」(제안이 6시간 안이고 도는 게 없을 때)\n"
+         "· 하나씩: 「업그레이드 1」 → 끝나면 「업그레이드 적용」(데몬 재시작은 호윤) → 「업그레이드 2」 …\n"
+         "· 검토 지적이 남았으면 「업그레이드 고쳐」, 내용은 「업그레이드 보기」, 그만은 「업그레이드 버려」\n"
+         "· 시작 · 고쳐 · 적용은 PC 앞(대화창 · 폰 웹)에서만 — 텔레그램은 상태 · 보기만")
+
+
+def _fix_pick(s):
+    """「이거 수정해」 「그거 고쳐」 — 적용 기다리는 업그레이드에 검토 지적이 남아 있고 그게 GO_FRESH_H 안에 나왔을 때만."""
+    if len(s) > 30 or GO_NO.search(s) or not re.search(r"수정|고쳐|고치|패치", s):
+        return False
+    j = _load().get("job") or {}
+    if j.get("status") != "ready" or (j.get("review") or {}).get("ok") is not False:
+        return False
+    try:
+        age = dt.datetime.now() - dt.datetime.strptime(j.get("finished", ""), "%Y-%m-%d %H:%M")
+    except ValueError:
+        return False
+    return age <= dt.timedelta(hours=GO_FRESH_H)
+
+
 def command(t, remote=False, log=print):
     """「업그레이드 …」 명령이나 제안 뒤 「바로 고쳐」 같은 말이면 답, 아니면 None(대화로 흘림 — 「업그레이드 어떻게 해?」 같은 말)."""
     s = t.strip()
     if not s.startswith("업그레이드"):
+        if _fix_pick(s):
+            return REFUSE if remote else fix_left(log)
         nums = _go_pick(s)
         if nums is None:
             return None
@@ -774,6 +884,10 @@ def command(t, remote=False, log=print):
     key = rest.replace(" ", "")
     if key in ("", "상태"):
         return status()
+    if key in ("고쳐", "수정", "수정해", "지적고쳐", "남은거고쳐"):
+        if remote:
+            return REFUSE
+        return fix_left(log) or ("남은 지적을 고칠 업그레이드가 없어. " + status())
     if key in ("보기", "내용", "결과"):
         return show()
     if key in ("버려", "취소", "그만"):
@@ -803,4 +917,4 @@ def command(t, remote=False, log=print):
         if not req:
             return "업그레이드 요청 <고칠 내용> — 예: 업그레이드 요청 할일 목록에 완료한 것도 회색으로 보여 줘"
         return start(req, None, log)
-    return None
+    return HOWTO + "\n\n" + status()
