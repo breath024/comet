@@ -329,6 +329,7 @@ HELP_TEXT = """COMET 기능 목록
   업그레이드 / 업그레이드 상태 — 지금 도는 것 · 제안 목록 (매일 13시 이후 알아서 찾아 제안)
   업그레이드 제안 — 지금 고칠 거리 찾기 (1~2분, 배너 · 텔레그램)
   업그레이드 1 / 업그레이드 요청 <내용> — 떼어 둔 복사본에서 고치기 시작 (끝나면 알림)
+  (그냥 말로 「○○ 기능 넣어 줘」 「△△ 했으면 좋겠어」 해도 「업그레이드로 맡길까?」 묻고 「응」이면 시작)
   업그레이드 보기 — 바뀐 것 · 검토 · 시험 결과
   업그레이드 적용 — 진짜 코드에 반영(커밋) → 데몬이 스스로 껐다 켬 · 업그레이드 버려 / 다시 / 되돌리기
   (검토 · 시험 통과한 업그레이드는 저절로 반영 · 지적이 남은 것만 「업그레이드 적용」 기다림)
@@ -1303,6 +1304,13 @@ class Comet:
             if will_speak and full.strip():
                 self._get_mouth().speak(full)
             return full
+
+        # ── 말로 하는 업그레이드 제안 — 「대화창에 시계 기능 넣어 줘」 → 「업그레이드로 맡길까?」 (upgrade.wish · 10/15)
+        #    위의 명령들을 다 지나온 말만 — 「할일에서 ○○ 빼 줘」 같은 명령을 가로채지 않게. 대답 「응」은 upgrade.command 가 받는다.
+        import upgrade
+        ans = upgrade.wish(t, remote=remote_guard.active())
+        if ans is not None:
+            return ans
 
         flat = text.replace(" ", "")
         imgsearch = any(k in flat for k in IMGSEARCH_KW)

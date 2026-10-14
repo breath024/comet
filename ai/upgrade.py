@@ -1004,9 +1004,57 @@ def _fix_pick(s):
     return age <= dt.timedelta(hours=GO_FRESH_H)
 
 
+# ── 말로 제안 ─────────────────────────────────────────
+# 「업그레이드 요청」을 안 붙여도 「코멧, 할일 끝난 건 회색으로 보였으면 좋겠어」 같은 말을 알아듣는다(10/15 호윤
+# 「내가 제안해서 업데이트하는 거」). 잡담까지 잡지 않게 바로 시작하지 않고 「업그레이드로 맡길까?」 한 번 묻는다 —
+# 다음 말이 「응」이면 시작, 그 밖이면 잊고 그 말은 평소 대화로 흘린다. 텔레그램에선 안 묻는다(시작이 막혀 있어서).
+WISH_VERB = re.compile(r"(했|하|되|됐|나왔|보였|떴|알려\s*줬|있었|생겼)으면\s*(좋겠|해)"
+                       r"|(넣어|추가해|만들어|바꿔|고쳐|없애|빼|줄여|늘려|키워)\s*(줘|줄래|주라|주면|봐)|기능\s*(넣|추가|만들)|버그")
+WISH_SELF = re.compile(r"코멧|너|니가|네가|기능|대화창|창에|텔레그램|알림|배너|말풍선|목소리|말걸기|브리핑|할\s*일|일정|소식|답")
+WISH_NO = re.compile(r"하지\s*마|말고|안\s*해도|취소|그만")
+WISH_YES = re.compile(r"(응|ㅇㅇ|ㅇ|어|웅|그래|좋아|맡겨|맡겨\s*줘|해|해\s*줘|고고|ㄱㄱ|ㄱ|오케이|ok|콜)[.!~ ]*", re.I)
+WISH_NAY = re.compile(r"(아니|아냐|ㄴㄴ|ㄴ|됐어|노|안\s*해|하지\s*마)[.!~ ]*")
+WISH_TTL = 600
+_wish = {}
+
+
+def _wish_pick(s):
+    """코멧을 고쳐 달라는 말 같으면 True — 「○○ 기능 넣어 줘」 「알림 안 떴으면 좋겠어」."""
+    return 6 <= len(s) <= 300 and bool(WISH_VERB.search(s)) and bool(WISH_SELF.search(s)) and not WISH_NO.search(s)
+
+
+def wish(t, remote=False):
+    """코멧 다른 명령(할일 · 알림 · 두뇌 …)을 다 지나온 말만 comet.respond 가 모델에 넘기기 직전에 부른다 —
+       「할일에서 장보기 빼 줘」 같은 명령을 가로채지 않게. 물을 거면 그 물음, 아니면 None."""
+    s = t.strip()
+    if remote or not _wish_pick(s):
+        return None
+    _wish.update(text=s, at=time.time())
+    return f"이거 업그레이드로 맡길까? 「{s[:60]}」\n「응」이면 클로드가 고치고 아스트라가 검토해 — 통과하면 저절로 반영. 아니면 「아니」."
+
+
+def _wish_answer(s, log):
+    """「업그레이드로 맡길까?」 뒤의 대답. 맡겼거나 접었으면 답, 딴 말이면 None(묻던 건 잊는다)."""
+    w = dict(_wish)
+    _wish.clear()
+    if time.time() - w.get("at", 0) > WISH_TTL:
+        return None
+    if WISH_YES.fullmatch(s):
+        return start(f"호윤이 대화 중에 바란 것: 「{w['text']}」\n"
+                     "이걸 코멧 기능 요청이나 버그 신고로 보고 고쳐라. 무엇을 바라는지 애매하면 가장 작은 범위로만.",
+                     w["text"], log)
+    if WISH_NAY.fullmatch(s):
+        return "알았어, 안 맡겨. (맡기려면 「업그레이드 요청 <내용>」)"
+    return None
+
+
 def command(t, remote=False, log=print):
     """「업그레이드 …」 명령이나 제안 뒤 「바로 고쳐」 같은 말이면 답, 아니면 None(대화로 흘림 — 「업그레이드 어떻게 해?」 같은 말)."""
     s = t.strip()
+    if _wish and not remote:
+        ans = _wish_answer(s, log)
+        if ans is not None:
+            return ans
     m = DOCTOR.match(s)
     if m and not GO_NO.search(m.group(1) or ""):      # 「닥터 스트레인지 봤어?」 같은 말은 대화로
         return REFUSE if remote else doctor(m.group(1) or "", log)
