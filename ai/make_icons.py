@@ -4,6 +4,10 @@
 #   혜성(comet) 모티프 + 데몬 UI와 같은 다크 배경(#0e0f12).
 #   결과: web/icon-180.png(apple) / icon-192 / icon-512 / icon-512-maskable
 #   데몬은 이 PNG들을 정적으로 서빙만 함(PIL 의존성은 빌드 단계에만).
+#
+#   ⚠️ 2026-10-15부터 아이콘은 이 스크립트 그림이 아니다 — 텔레그램 봇 사진과 같은 `comet_사진풍.png`
+#      (Desktop/개인프젝/A.B.B.Y.S/텔레그램_프로필/)으로 web/icon-*.png · comet.ico를 바꿨다(호윤 「아이콘도 바꿔줘」).
+#      **이걸 다시 돌리면 옛 혜성 아이콘으로 덮어쓴다.** 옛 파일 사본: 텔레그램_프로필/_참고/comet_옛아이콘/
 # ═══════════════════════════════════════════════════════════════
 import os
 from PIL import Image, ImageDraw, ImageFilter
