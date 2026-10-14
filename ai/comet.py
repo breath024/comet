@@ -1311,16 +1311,17 @@ class Comet:
             if imgsearch:
                 print("  · 이미지 역검색 (식별→원본·출처추적)")
                 full = self._image_search(text)
-            elif screen:
-                print("  · 화면 인식 (gemma4 vision)")
-                full = self._look(text)
             elif ollama_down.is_down():
                 #  ★2026-10-14 — 연결 거부가 한 번 났으면 살아날 때까지 문지기 · light 를 안 거친다(ollama_down.py)
+                #    화면 인식(gemma4 vision)도 로컬이라 이 분기가 먼저다(아스트라 검토 지적)
                 print("  · ollama 꺼짐 표시 — 문지기 · light 건너뛰고 바로 우회")
                 full = self._cloud_reply(text)
                 if not full:
                     print("\n  [오류] 로컬 꺼짐 · 클로드 · 아스트라 우회도 실패")
                     return "[오류] 로컬 모델이 꺼져 있고 우회도 실패했어."
+            elif screen:
+                print("  · 화면 인식 (gemma4 vision)")
+                full = self._look(text)
             else:
                 tier, reason, use_tools, auto_web = self.router.route(text)
                 tier, reason, _ka = self._game_adjust(tier, reason, flat)
