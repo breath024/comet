@@ -21,10 +21,12 @@
 10/14 호윤이 「이거 수정해」 했는데 대화로 흘러 안 됨). 고친 건 복사본에 커밋을 하나 더 얹고, 적용은 base..commit 을 통째로.
 명령: 업그레이드 [상태|제안|1~3|요청 <내용>|보기|고쳐|적용|버려|다시|되돌리기]
 
-닥터(10/15 호윤 「버그 터지면 코멧 닥터로 돌려서 고칠 수 있게」):
-  데몬이 떠 있는데 이상하면 「닥터 <증상>」 → doctor() — 증상 · 최근 오류 · 최근 반영한 업그레이드를 묶어 고치게(적용은 그대로 「업그레이드 적용」).
+자동 적용 · 닥터(10/15 호윤 「내가 확인해도 의미 없을 것 같다 · 버그 터지면 코멧 닥터로 고칠 수 있게」):
+  검토 「통과」 + 시험 통과면 호윤 확인 없이 적용하고 데몬이 껐다 켠다(_auto_apply). 지적이 남았거나 검토를 못 했으면 지금처럼 기다림.
+  데몬이 떠 있는데 이상하면 「닥터 <증상>」 → doctor() — 증상 · 최근 오류 · 최근 반영한 업그레이드를 묶어 고치게.
   데몬이 안 뜨거나 계속 죽으면 doctor.py(데몬 바깥 · run_daemon.bat 이 띄움)가 방금 적용한 업그레이드를 되돌리거나
-  heal() 로 고치게 하고, 반영은 데몬 창에서 호윤이 y 를 쳐야 한다.
+  heal() 로 고치게 한다(통과 못 한 건 데몬 창에서 호윤이 y 를 쳐야 반영).
+  doctor.py · run_daemon.bat 을 건드린 업그레이드는 자동 적용 안 함(GUARD_FILES — 지키는 쪽이 같이 깨지면 안 됨).
 """
 import datetime as dt
 import glob
@@ -435,6 +437,8 @@ def _run_job(log=print):
             return
         _set_job(status="ready", step="적용 기다림", commit=_git("rev-parse", "HEAD", cwd=WT)[1].strip(),
                  finished=_now())
+        if _auto_apply(log):
+            return
         rv = review.get("by") or "못 함"
         verdict = {True: "통과", False: "지적 남음", None: "판정 불명"}[review.get("ok")]
         _push(f"업그레이드 준비됨: {title}",
@@ -444,6 +448,35 @@ def _run_job(log=print):
     except Exception as e:
         log(f"[upgrade] 작업 오류: {e}")
         _finish("failed", f"작업 중 오류: {e}", log, keep_wt=True)
+
+
+AUTO_APPLY = True
+GUARD_FILES = {f"{SUB}/doctor.py", f"{SUB}/run_daemon.bat"}      # 지키는 쪽 — 이걸 건드린 업그레이드는 호윤이 보고 적용
+
+
+def _auto_apply(log=print):
+    """검토 「통과」 + 시험 통과면 호윤 확인 없이 적용하고 데몬이 스스로 껐다 켠다(10/15 호윤 「내가 확인해도 의미 없을 것 같다」).
+       켠 뒤 안 뜨면 doctor.py 가 이 업그레이드를 되돌린다. 적용했으면 True — 아니면 지금처럼 적용 기다림."""
+    j = _load().get("job") or {}
+    if not AUTO_APPLY or j.get("status") != "ready" or not j.get("tests_ok") \
+            or (j.get("review") or {}).get("ok") is not True:
+        return False
+    base = j.get("base") or (j["commit"] + "~1")
+    files = {p.strip() for p in _git("diff", "--name-only", base, j["commit"])[1].splitlines() if p.strip()}
+    if files & GUARD_FILES:
+        log(f"[upgrade] 자동 적용 안 함 — 닥터 쪽 파일을 건드림: {', '.join(sorted(files & GUARD_FILES))}")
+        return False
+    msg = apply()
+    if not msg.startswith("반영했어"):
+        _push(f"업그레이드 자동 적용 못 함: {j['title']}", msg[:600])
+        return True                                    # 「준비됨」 알림 대신 이걸로 — 둘 다 보내면 헷갈린다
+    import restart
+    ok, why = restart.soon("업그레이드 자동 적용", log=log) if restart.ENABLED else (False, "")
+    _push(f"업그레이드 자동 적용: {j['title']}",
+          f"{(j.get('summary') or '')[:500]}\n검토 {(j.get('review') or {}).get('by')}(통과) · {(j.get('tests') or '')[:80]}\n"
+          + ("데몬이 곧 스스로 껐다 켜 — 안 뜨면 닥터가 되돌림.\n" if ok else (f"스스로 재시작 못 함: {why}\n" if why else ""))
+          + "이상하면 「업그레이드 되돌리기」 · 「닥터 <증상>」")
+    return True
 
 
 def _fix_left(log=print):
@@ -493,6 +526,8 @@ def _fix_left(log=print):
         _set_job(status="ready", step="적용 기다림", commit=_git("rev-parse", "HEAD", cwd=WT)[1].strip(),
                  review=review, notes=notes, tests=test_msg, tests_ok=True, finished=_now(),
                  stat=_git("diff", "--stat", base, "HEAD", cwd=WT)[1].strip()[-1500:])
+        if _auto_apply(log):
+            return
         verdict = {True: "통과", False: "지적 남음", None: "판정 불명"}[review.get("ok")]
         _push(f"업그레이드 남은 지적 고침: {title}",
               f"{_summary(fout)[:400]}\n검토 {review.get('by') or '못 함'}({verdict})\n"
@@ -517,7 +552,7 @@ def fix_left(log=print):
     _worker = threading.Thread(target=_fix_left, kwargs={"log": log}, name="comet-upgrade-fix", daemon=True)
     _worker.start()
     return (f"남은 검토 지적 고치는 중: {j['title']}\n복사본에서만 고치고 다시 검토해 — 끝나면 배너 · 텔레그램으로 알려줄게. "
-            "진짜 코드엔 여전히 「업그레이드 적용」 해야 들어가.")
+            "이번엔 검토 통과면 저절로 반영해.")
 
 
 def _to_waiting(errs, log):
@@ -600,7 +635,8 @@ def start(request, title=None, log=print):
         _save(st)
     _launch(log)
     return (f"업그레이드 시작: {title}\n클로드가 떼어 둔 복사본에서 고치고 아스트라가 검토해(막히면 서로 바꾸거나 자기 검토). "
-            "몇 분~20분 걸려 — 끝나면 배너 · 텔레그램으로 알려줄게. 진짜 코드엔 「업그레이드 적용」 해야 들어가.")
+            "몇 분~20분 걸려 — 검토 · 시험 통과면 저절로 반영하고 데몬이 껐다 켜(안 뜨면 닥터가 되돌림). "
+            "지적이 남으면 알려 주고 「업그레이드 적용」 기다려.")
 
 
 def tick(log=print):
@@ -882,7 +918,8 @@ def _start_picks(nums, log=print):
 
 HOWTO = ("업그레이드는 한 번에 하나씩 돌아(복사본이 하나라서).\n"
          "· 제안 전부 한꺼번에: 제안 직후 「바로 고쳐」(제안이 6시간 안이고 도는 게 없을 때)\n"
-         "· 하나씩: 「업그레이드 1」 → 끝나면 「업그레이드 적용」(데몬이 스스로 껐다 켬) → 「업그레이드 2」 …\n"
+         "· 하나씩: 「업그레이드 1」 → 검토 · 시험 통과면 저절로 반영(데몬이 스스로 껐다 켬) → 「업그레이드 2」 …\n"
+         "· 지적이 남아 기다리는 건 「업그레이드 적용」으로 직접 반영\n"
          "· 검토 지적이 남았으면 「업그레이드 고쳐」, 내용은 「업그레이드 보기」, 그만은 「업그레이드 버려」\n"
          "· 코멧이 이상하면 「닥터 <증상>」 — 최근 오류 · 최근 업그레이드까지 묶어 고치게 해\n"
          "· 시작 · 고쳐 · 적용 · 닥터는 PC 앞(대화창 · 폰 웹)에서만 — 텔레그램은 상태 · 보기만")
@@ -917,7 +954,7 @@ def _doctor_request(symptom, crash=""):
 
 
 def doctor(symptom="", log=print):
-    """「닥터 <증상>」 — 업그레이드 작업 하나로 고치게 한다. 적용은 다른 업그레이드처럼 「업그레이드 적용」."""
+    """「닥터 <증상>」 — 업그레이드 작업 하나로 고치게 한다. 반영은 다른 업그레이드와 같다(통과면 저절로)."""
     msg = start(_doctor_request(symptom.strip()), "닥터: " + (symptom.strip() or "최근 오류")[:24], log)
     return ("🩺 닥터 " + msg) if msg.startswith("업그레이드 시작") else msg
 
@@ -931,7 +968,12 @@ def heal(crash, log=print):
         return False
     if _worker:
         _worker.join()
-    j = _load().get("job") or {}
+    st = _load()
+    h = (st.get("history") or [{}])[-1]
+    if not st.get("job") and h.get("title") == "닥터: 데몬이 안 뜸" and h.get("status") == "적용":
+        log("[닥터] 검토 · 시험 통과 — 저절로 반영함")              # _auto_apply 가 이미 했다
+        return True
+    j = st.get("job") or {}
     if j.get("status") != "ready":
         log("[닥터] 못 고침: " + str(j.get("error") or j.get("step"))[:300])
         return False
