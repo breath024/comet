@@ -119,6 +119,36 @@ if _ONE is None:
     print("       (둘이 같이 돌면 대화기록·소식 알림이 꼬인다. 새 코드로 바꾸려면 떠 있는 데몬 창을 먼저 닫고 다시 켤 것)")
     sys.exit(0)
 
+# ── 로그인 전 코멧(세션 0 · 작업 스케줄러 COMET-boot) — headless.py 머리말 ──
+import headless
+if headless.HEADLESS:
+    if headless.user_logged_on() and os.environ.get("COMET_HEADLESS") != "1":
+        print("[로그인 전] 이미 누가 로그인해 있다 — 로그인 쪽 코멧(comet_logon.py)에 맡기고 내려감")
+        sys.exit(0)                     # 0 = doctor 도 그대로 끝
+    try:
+        os.remove(headless.STOP_FLAG)   # 지난번에 남은 내려가라 표시
+    except OSError:
+        pass
+    with open(headless.PID_FILE, "w", encoding="utf-8") as _f:
+        _f.write(str(os.getpid()))
+
+    def _watch_stop():
+        """로그인하면 comet_logon.py 가 STOP_FLAG 를 놓는다 → 답하던 건 마치고(대화 줄) 스스로 내려감."""
+        while not os.path.exists(headless.STOP_FLAG):
+            time.sleep(2)
+        print("[로그인 전] 로그인함 — 로그인 쪽 코멧에 넘기고 내려감")
+        lk = globals().get("_lock")
+        if lk is not None:
+            lk.acquire(timeout=180)
+        try:
+            os.remove(headless.PID_FILE)
+        except OSError:
+            pass
+        sys.stdout.flush()
+        os._exit(0)
+    threading.Thread(target=_watch_stop, daemon=True).start()
+    print("[로그인 전] 화면 없는 코멧 — 텔레그램 · 폰 웹 · 브리핑만(목소리 · Alt 두 번 없음)")
+
 # 데몬 기동 시 호윤 최신 메모리 → profile/ 자동 동기화 (코멧이 항상 최신으로 깨어남).
 #  ★comet import 전에 해야 SYSTEM(_PROFILE)이 갱신본을 로드한다. 복사·갱신만(미러 아님=안전).
 try:
@@ -186,6 +216,8 @@ def _hook_console_close():
 
 try:
     import voice as _voice
+    if headless.HEADLESS:
+        raise RuntimeError("로그인 전 — 소리 장치 없음")
     if _voice.ducker.recover():
         print("[덕킹] 지난번에 줄인 채 끝난 앱 볼륨을 되돌림")
     if not _hook_console_close() and os.name == "nt":
@@ -193,6 +225,8 @@ try:
 except Exception as _e:
     print(f"[덕킹] 복구 건너뜀: {_e}")
 try:
+    if headless.HEADLESS:
+        raise RuntimeError("로그인 전 — 소리 장치 없음")
     _voice.warm_ayaka()           # 목소리 서버를 미리 — 첫 말이 Edge 로 새지 않게(서버는 데몬과 따로 산다)
 except Exception as _e:
     print(f"[아야카] 미리 띄우기 건너뜀: {_e}")
@@ -710,6 +744,8 @@ def main():
         print("       옛 데몬 창이 남아 있으면 그 창을 닫고 다시 켤 것. 이 창은 닫으면 된다.")
         sys.stdout.flush()
         os._exit(3)        # 3 = 코드 탓 아님(doctor.py 가 고치려 들지 않게) · 이미 띄운 자율모드 스레드(소식·말걸기·브리핑)까지 같이 내린다 — 포트 없이 알림만 울리지 않게
+    # 떠 있는 동안 유휴 절전을 막는다(10/15 정전 뒤 로그인 화면에서 15분 만에 잠들어 밖에서 못 닿음). 끄면 윈도우 설정 그대로.
+    print("[절전] 코멧이 떠 있는 동안 절전 막음" if headless.keep_awake() else "[절전] 막기 실패 — 윈도우 설정대로 잠든다")
     srv.serve_forever()
 
 

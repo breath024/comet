@@ -511,6 +511,9 @@ def start_ayaka_server(force=False):
     global _AYAKA_SPAWNED
     if _AYAKA_SPAWNED and not force:
         return
+    import headless
+    if headless.HEADLESS:            # 로그인 전(세션 0) — 여기서 띄운 서버가 남으면 로그인 뒤 목소리가 안 들리는 세션 0 으로 나간다
+        return
     _AYAKA_SPAWNED = True
     root = os.path.dirname(os.path.dirname(AYAKA_REF))          # .../gpt-sovits
     py = os.path.join(root, ".venv", "Scripts", "pythonw.exe")
@@ -825,7 +828,10 @@ class Mouth:
            on_start() = 합성이 끝나고 소리 나기 직전에 한 번(이슈 배너를 목소리와 같이 띄우려고).
            못 읽으면 안 불린다 — 그 뒤처리는 부른 쪽 몫."""
         global _waiting
-        called_at = time.time()              # ★정리 전에 잰다 — 한글 소리 찾기가 모델을 부르면 수 초 걸려
+        import headless
+        if headless.HEADLESS:                # 로그인 전(세션 0) — 스피커 없음. 못 읽은 걸로
+            return False
+        called_at = time.time()             # ★정리 전에 잰다 — 한글 소리 찾기가 모델을 부르면 수 초 걸려
                                              #   'Esc 전에 온 말' 이 'Esc 뒤에 온 말' 로 보였다
         if TTS_ENGINE == "ayaka":
             text = speak_numbers(text)       # clean_for_speech 가 ~·- 를 지우기 전에

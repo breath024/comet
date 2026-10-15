@@ -991,8 +991,12 @@ class Autonomy:
 
     # 저장된 enabled 모드 복원(데몬/콘솔 시작 시 호출)
     def restore(self):
+        import headless
         for name, m in self.modes.items():
             if self.cfg[name].get("enabled"):
+                if headless.HEADLESS and name in headless.NO_START:      # 로그인 전(세션 0) — 마이크 · 키보드 없음. 설정은 그대로
+                    self.log(f"[자율모드] {name} — 로그인 전이라 안 켬(로그인하면 켜짐)")
+                    continue
                 ok, why = m.start()
                 self.log(f"[자율모드] {name} 복원 → {'ON' if ok else '실패: ' + why}")
 
