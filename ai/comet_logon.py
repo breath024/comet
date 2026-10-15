@@ -23,7 +23,10 @@ WAIT_STOP = 240          # 세션 0 코멧이 답하던 걸 마치는 데(대화
 
 def log(msg):
     line = time.strftime("%H:%M:%S ") + f"[로그인] {msg}"
-    print(line, flush=True)
+    try:
+        print(line, flush=True)        # pythonw 면 stdout 없음 · cp949 콘솔이면 — 이 줄이 넘겨받기를 막으면 안 된다
+    except Exception:
+        pass
     try:
         d = os.path.join(HERE, "logs")
         os.makedirs(d, exist_ok=True)
