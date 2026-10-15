@@ -21,7 +21,7 @@ try {
     $vbs = Join-Path ([Environment]::GetFolderPath('Startup')) 'COMET_logon.vbs'
     $pyw = $py -replace 'python\.exe$', 'pythonw.exe'
     "Set s = CreateObject(`"WScript.Shell`")`r`ns.Run `"`"`"$pyw`"`" `"`"$here\comet_logon.py`"`"`", 0, False" |
-        Set-Content -Encoding ASCII $vbs
+        Set-Content -Encoding Unicode $vbs   # ASCII 면 경로 속 한글(개인프젝)이 ? 로 깨짐
 
     $a2 = New-ScheduledTaskAction -Execute $py -Argument "`"$here\headless.py`" --selftest" -WorkingDirectory $here
     Register-ScheduledTask -TaskName 'COMET-boot-selftest' -Action $a2 -Principal $p -Settings $s -Force | Out-Null
