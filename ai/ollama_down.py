@@ -9,7 +9,9 @@
 #
 #  · 연결 거부만 켠다. VRAM 부족 · 500 · timed out 은 서버는 살아 있는 것이라 지금처럼(light 로 내리기 등).
 #  · 켜져 있는 동안 뒤에서 PROBE_SEC 마다 한 번 /api/tags 를 2초로 확인 → 살아나면 바로 풀고 한 줄 남긴다.
-#  · ollama 프로세스를 켜거나 끄지 않는다. 확인만 한다.
+#  · 꺼져 있으면 스스로 켠다(10/15 호윤 텔레그램 「올라마가 죽어있을 때 스스로 킬 수 있도록 고쳐」) — start_ollama().
+#    표시가 켜질 때 한 번 + 꺼져 있는 동안 RESTART_SEC 마다. ollama 프로세스가 이미 있으면(올라오는 중) 안 띄운다.
+#    로그인한 창 = 「ollama app.exe」(평소처럼 트레이 + serve) · 로그인 전(세션 0) = 「ollama.exe serve」. 끄지는 않는다.
 #  · 주소는 ollama 파이썬 라이브러리와 같은 OLLAMA_HOST(없으면 127.0.0.1:11434) — comet·voice 의 Client 가 쓰는 곳.
 # ═══════════════════════════════════════════════════════════════
 import os
@@ -85,7 +87,52 @@ def mark(e):
         if not _watching:
             _watching = True
             threading.Thread(target=_watch, daemon=True, name="ollama-down-watch").start()
+    threading.Thread(target=start_ollama, daemon=True, name="ollama-start").start()
     return True
+
+
+OLLAMA_DIR = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Ollama")
+RESTART_SEC = 300       # 꺼져 있는 동안 다시 띄워 보는 간격
+_last_start = 0.0
+
+
+def _ollama_running():
+    import subprocess
+    try:
+        r = subprocess.run(["tasklist", "/FI", "IMAGENAME eq ollama.exe", "/NH"], capture_output=True, text=True,
+                           timeout=10, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        return "ollama.exe" in (r.stdout or "").lower()
+    except Exception:
+        return False
+
+
+def start_ollama():
+    """ollama 를 띄운다. 띄웠으면 True. 최근에 띄웠거나 이미 프로세스가 있으면(올라오는 중) 안 띄운다."""
+    global _last_start
+    import subprocess
+    with _lock:
+        if time.time() - _last_start < RESTART_SEC:
+            return False
+        _last_start = time.time()
+    if os.name != "nt" or _alive() or _ollama_running():
+        return False
+    try:
+        import headless
+        if headless.HEADLESS:
+            cmd = [os.path.join(OLLAMA_DIR, "ollama.exe"), "serve"]
+        else:
+            cmd = [os.path.join(OLLAMA_DIR, "ollama app.exe")]
+        if not os.path.exists(cmd[0]):
+            print(f"  · [ollama 켜기] 실행 파일 없음: {cmd[0]}")
+            return False
+        subprocess.Popen(cmd, cwd=OLLAMA_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                         | getattr(subprocess, "DETACHED_PROCESS", 0))
+        print(f"  · [ollama 켜기] 꺼져 있어서 띄움: {os.path.basename(cmd[0])}")
+        return True
+    except Exception as e:
+        print(f"  · [ollama 켜기] 실패: {e}")
+        return False
 
 
 def _alive():
@@ -107,3 +154,4 @@ def _watch():
                 _watching = False
             print(f"  · [ollama 살아남] {_base()} 응답 — 꺼짐 표시 풀고 로컬로 (꺼져 있던 시간 {took}초)")
             return
+        start_ollama()                  # RESTART_SEC 안 지났으면 알아서 건너뜀
