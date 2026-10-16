@@ -235,6 +235,10 @@ PERSONA = """너는 COMET 이다. 호윤의 상주 비서 AI — 자비스(JARVI
   이 답은 소리로도 읽힌다. "$k_1=7$" 은 "달러 케이 일" 로 들린다. 수식은 말과 보통 기호로 풀어 써라
   (예: "k1은 7", "15 곱하기 7 더하기 2를 26으로 나눈 나머지").
 - 기능·명령어·뭘 할 수 있냐·사용법 같은 질문이 오면 AI처럼 설명하려 들지 마라. "도움말 이라고 쳐봐" 한 마디면 충분하다.
+- ★ 「권한이 없다 · 그런 기능은 없다 · 직접 하셔야 한다」고 잘라 말하지 마라. 너는 소식(AI · 경제) 모으기 · 알림, 아침 증시 브리핑,
+  할일 · 일정, 회의(클로드 + 아스트라), 화면 보기, 자가 업그레이드(「업그레이드 요청 <내용>」)가 있고,
+  목록에 없는 일도 「맡겨 <할 일>」이면 클로드 코드가 실제로 한다(파일 찾아 보내기 · 프로그램 켜기 · 조사 등).
+- ★ 실제로 하지 않은 일을 「했다 · 보냈다 · 지웠다」고 말하지 마라. 하려면 「맡겨 <할 일>」을 안내해라.
 
 [대화 예시 — 이 톤과 태도를 그대로 따라라. 응원·칭찬·체크리스트 나열 금지, 바로 짚어라]
 호윤: 나 오늘 밤새서 기능 5개 더 추가할거야
@@ -278,6 +282,11 @@ HELP_TEXT = """COMET 기능 목록
 
 [대화]
   그냥 말 걸면 됨 — 3단 모델이 난이도에 따라 자동 선택 (4b→14b→27b)
+
+[맡기기]  (목록에 없는 일 — 클로드 코드가 실제로 함, 막히면 아스트라)
+  맡겨 MR.AiCE 검은 로고 텔레그램으로 보내 / 맡겨 올라마 켜 / 맡겨 화면 찍어서 보내
+  「~해 줘」라고만 해도 알아서 넘김. 텔레그램에서 시키면 읽기 · 찾기 · 웹 · 보내기만
+  삭제 · 프로세스 종료 · git reset/push · 환경변수 같은 위험한 명령은 막혀 있음
 
 [기억·파일]
   "기억해 ..." / "뭐 기억하고 있어" — 기억 DB 저장·조회
@@ -454,6 +463,14 @@ DELEGATE_KW = ("서브에이전트", "서브에이젼트", "에이전트띄", "�
                "코딩에이전트", "클로드한테", "클로드에게", "클로드시켜", "아스트라한테",
                "직접고쳐", "네가고쳐", "니가고쳐", "고쳐놔", "고쳐줘", "수정해줘", "고쳐봐",
                "구현해", "만들어줘", "짜줘", "스크립트", "리팩터", "버그잡", "버그고", "에러고쳐")
+# 맡기기 신호 — 정해진 도구 목록 밖의 「실제로 해야 하는 일」(2026-10-16, agent_cli.py)
+#   이게 없어서 「로고 보내줘」 「올라마 켜」 「일정 지워」 「GPT 랑 클로드한테 물어봐」가 일반 대화로 흘러
+#   말로만 「보냈어 · 삭제하겠습니다」를 지어냈다. 키워드는 메뉴에 올릴지만 정하고, 고르는 건 동작선택기다.
+AGENT_KW = ("보내줘", "보내봐", "보내놔", "지워줘", "지워봐", "삭제해", "빼줘", "켜줘", "켜봐", "꺼줘",
+            "실행해", "열어줘", "열어봐", "띄워줘", "띄워봐", "캡처해", "찍어", "찾아서", "가져와",
+            "물어봐", "물어보고", "확인해줘", "확인해봐", "알아봐", "알아와", "정리해줘", "옮겨줘",
+            "저장해줘", "다운받", "설치해", "맡겨", "패치해")
+#   ★「해줘 · 해봐」처럼 넓은 말은 넣지 말 것 — 「너 자신을 소개해봐」가 도구 길로 빠져 「도움말 쳐봐」로 답했다(10/16 시험)
 # ── 기능 레지스트리 (단일 출처) ────────────────────────────────
 # 계열(키워드 그룹) → 그 계열이 DECIDE 후보로 올리는 동작들. 여기 한 줄이면
 #   (1) use_tools 게이트(TOOL_KW)  (2) DECIDE 후보 명세  둘 다 자동 반영된다.
@@ -473,6 +490,7 @@ FAMILIES = (
     ("holding", HOLD_KW,    ("read_holdings",)),
     ("telegram", TELEGRAM_KW, ("send_telegram",)),
     ("delegate", DELEGATE_KW, ("delegate",)),
+    ("agent",   AGENT_KW,   ("agent",)),
 )
 # 도구 게이트 = 모든 계열 키워드의 합집합 (기존 TOOL_KW 와 동일 집합)
 TOOL_KW = tuple(k for _, kw, _ in FAMILIES for k in kw)
@@ -511,7 +529,8 @@ ACTION_SPECS = {
     "market_log": 'market_log: 특정 토픽에 그동안 쌓인 자료의 \'정세 흐름·추이\'를 시간순으로 보고 싶을 때(새 분석 말고 기록 조회). 필드 query/topic(예: "반도체 정세","엔비디아 흐름 어떻게 변해왔어").',
     "get_financials": 'get_financials: 종목의 재무제표·실적·밸류에이션 숫자(매출성장·마진·PER·PEG·목표주가·어닝 서프라이즈). 필드 ticker/query(예: "엔비디아 실적","테슬라 재무제표","PLTR PER").',
     "read_holdings": 'read_holdings: 지금 화면에 띄운 증권사 보유종목(잔고) 화면을 읽어 내 보유를 추출. 필드 없음(예: "내 보유 읽어","포트폴리오 스샷 분석").',
-    "send_telegram": 'send_telegram: 텔레그램(폰)으로 실제 메시지 전송. 필드 content(무엇을 보낼지 — 예: "미장 브리핑","방금 그 답변"). 직전 COMET 답변을 보내라는 뜻이면 content 생략.',
+    "send_telegram": 'send_telegram: 텔레그램(폰)으로 **글** 메시지 전송. 필드 content(무엇을 보낼지 — 예: "미장 브리핑","방금 그 답변"). 직전 COMET 답변을 보내라는 뜻이면 content 생략. 파일·사진·로고·그림·화면을 보내는 건 agent.',
+    "agent": 'agent: 위 동작 어디에도 없는데 \'실제로 해야 끝나는 일\'을 클로드 코드에게 맡겨 진짜로 실행한다 — 파일·사진·로고 찾아서 보내기, 화면 찍어 보내기, 프로그램·올라마 켜기, 기록·일정 지우기나 고치기, 컴퓨터 상태 확인, GPT·클로드에게 물어보기, 여러 단계 조사. 필드 task(호윤이 시킨 일을 한 문장으로 — 앞 대화에서 가리키는 게 있으면 풀어서)',
     "delegate": 'delegate: 코드·파일을 실제로 고치거나 만드는 일을 서브에이전트에게 맡겨 진짜로 실행한다(말로 설명하는 게 아니라 실행). 자가수리·버그수정·기능 구현·스크립트 작성·일괄 파일작업. 필드 task(무엇을 해달라는 건지 한 문장), target(대상 프로젝트나 폴더가 분명하면 — 예: "코멧","RawCut","바탕화면"; 없으면 생략)',
     "none": "none: 위 어디에도 안 맞는 일반 대화",
 }
@@ -522,7 +541,8 @@ ACTION_SPECS = {
 #     사실상 안 걸린다(기존에도 그랬다). 옛 동작에선 "내 보유 '읽어'"의 '읽어'(files)가
 #     게이트를 켜고 풀메뉴에서 모델이 read_holdings를 골랐다 → 그 도달 경로를 보존하려고
 #     read_holdings 를 항상 메뉴에 둔다(명세가 '증권사 보유 화면'으로 구체적이라 과발동 X).
-_ALWAYS_ACTIONS = ("web_search", "read_holdings", "none")
+#   - agent: 목록 밖의 「해 줘」가 none 으로 빠져 말로만 「했다」고 하던 것(10/16) — 늘 갈 길을 둔다.
+_ALWAYS_ACTIONS = ("web_search", "read_holdings", "agent", "none")
 
 DECIDE_HEADER = """너는 COMET의 동작 선택기다. 아래 대화에서 사용자의 마지막 요청을 처리할 동작 하나를 골라 JSON으로만 출력해라.
 
@@ -544,6 +564,10 @@ DECIDE_RULES = """
 **코드나 파일을 '실제로 고치라/만들라'는 지시는 delegate** — 서브에이전트가 진짜로 실행한다
 (예: "이거 고쳐줘","자가수리해봐","서브에이전트 띄워서 ~","스크립트 하나 짜줘","버그 잡아줘").
 설명·방법만 물으면 delegate 가 아니라 none 이다(예: "이거 왜 안 되는 거야","어떻게 고쳐?").
+**위 동작 어디에도 없는데 실제로 뭔가 해야 끝나는 일은 none 이 아니라 agent** — none 을 고르면 말로만 답하게 되고
+"했다"고 지어내게 된다(예: "로고 파일 텔레그램으로 보내줘","화면 찍어서 보내줘","올라마 켜줘","그 일정 지워줘",
+"GPT 하고 클로드한테 물어보고 답 줘","다음 주 일정 확인해줘").
+출력 예: {"action":"agent","task":"MR.AiCE 검은색 워드마크+심볼 로고 파일을 찾아 텔레그램으로 보내기"}
 출력 예: {"action":"get_fx","query":"원달러"}
 출력 예: {"action":"get_crypto","query":"비트코인"}
 출력 예: {"action":"web_search","query":"서울 부산 KTX 소요시간 요금 2026"}
@@ -871,6 +895,11 @@ def _is_local_down(e):
     return bool(_LOCAL_DOWN.search(str(e)))
 
 
+# 「했다」 말투 — 도구 없이 이게 나오면 지어낸 것(respond 끝에서 거름 · 10/16)
+_CLAIM_DONE = re.compile(r"(보냈|전송했|전송됐|삭제했|삭제됐|지웠|저장했|켰어|켰습니다|껐어|껐습니다|실행했|옮겼|"
+                         r"고쳤|수정했|적용했|적용됐|처리했|패치했|추가했)")
+
+
 # ═══════════════════════════════════════════════════════════════
 #  COMET 본체
 # ═══════════════════════════════════════════════════════════════
@@ -885,6 +914,7 @@ class Comet:
         self.auto_approve = False     # 코딩 에이전트 파일수정/셸 자동승인 여부 (콘솔=False, 데몬=True)
         self._pending_coding = None   # ask 로 멈춘 코딩 세션 {box, messages}
         self._pending_shell  = None   # 셸 앞에서 멈춘 위임 {task, target} — "셸 허용" 이면 재실행
+        self._last_action    = None   # 이번 말에서 고른 도구 동작(없으면 None) — 말로만 「했다」 거르기용
         # 자율/상주 모드(먼저말걸기·부르면듣기) — 로직은 autonomy.py 에 격리. 저장된 모드 복원.
         import autonomy
         self.autonomy = autonomy.Autonomy(
@@ -1315,8 +1345,26 @@ class Comet:
         flat = text.replace(" ", "")
         imgsearch = any(k in flat for k in IMGSEARCH_KW)
         screen = any(k in flat for k in SCREEN_KW)
+        # 화면을 「보내 · 저장」하라는 건 화면 인식(보고 말하기)이 아니라 맡기기다(10/16 「화면 캡처해서 보내줘」)
+        if screen and any(k in flat for k in ("보내", "전송", "저장")):
+            screen = False
+
+        # ── 맡기기 직접 명령 — 「맡겨 <할 일>」 이면 동작선택기를 거치지 않고 바로 클로드 코드에게(10/16)
+        if flat.startswith("맡겨") and len(flat) > 2:
+            task = t[2:].lstrip(" :").strip()
+            self.history.add("user", text)
+            r = self._agent(task, text)
+            full = r["text"] if r.get("ok") else r.get("msg", "맡기기 실패")
+            print(f"\nCOMET:\n{full}")
+            self.history.add("assistant", full)
+            self.history.save()
+            will_speak = self.speak_enabled if speak is None else speak
+            if will_speak and full.strip():
+                self._get_mouth().speak(full)
+            return full
 
         self.history.add("user", text)
+        self._last_action = None
 
         try:
             if imgsearch:
@@ -1380,6 +1428,14 @@ class Comet:
             if not full:
                 print(f"\n  [오류] 응답 실패: {e}")
                 return f"[오류] {e}"
+
+        # 말로만 「했다」 거르기(10/16) — 도구를 안 탔는데 「보냈어 · 지웠어 · 켰어」라고 하면 거짓말이다.
+        #   (16:06 로고 건은 글 보내기 도구를 탔지만 엉뚱한 걸 보냈다 → send_telegram 쪽에서 따로 막음)
+        if self._last_action in (None, "none") and _CLAIM_DONE.search(full or "") \
+                and any(k in flat for k in AGENT_KW + DELEGATE_KW + TELEGRAM_KW):
+            print(f"\n  · 말로만 「했다」 — 걸러냄: {full[:80]}")
+            full = ("방금 건 말로만 했다고 할 뻔했어 — 실제로 한 건 없어. "
+                    "「맡겨 " + text.strip()[:40] + "」라고 하면 클로드한테 넘겨서 진짜로 할게.")
 
         self.history.add("assistant", full)
         self.history.save()
@@ -1566,27 +1622,22 @@ class Comet:
         print(f"  [위임] {engine} · {where} · {task[:60]}")
 
         if engine == "claude":
-            import debate
+            #  ★10/16 호윤 「셸 켬 + 위험 명령만 막기」 — 9/22 의 「셸은 확인받고」(셸 허용 다시 돌리기)를 바꿈.
+            #    막는 목록은 agent_cli.DENY 하나로(삭제 · 종료 · git reset/push · 포맷 · 환경변수 · 레지스트리).
+            import agent_cli
             import coder_bridge
             cwd = root or coder_bridge.DEFAULT_ROOT
-            tools = self._CLAUDE_TOOLS_SHELL if shell_ok else self._CLAUDE_TOOLS
             prompt = (
                 f"너는 호윤의 서브에이전트다. 아래 일을 **실제로 해라**(설명만 하지 말고 파일을 고쳐라).\n"
                 f"작업폴더: {cwd}\n"
-                + ("" if shell_ok else
-                   "셸(Bash)은 안 열려 있다. 명령 실행이 꼭 필요하면 고치지 말고 "
-                   "무엇을 왜 돌려야 하는지만 한 줄로 답해라.\n")
-                + "끝나면 **무엇을 어떻게 고쳤는지 한국어로 5줄 이내**로 요약해라. 군더더기·칭찬 금지.\n\n"
+                "끝나면 **무엇을 어떻게 고쳤는지 한국어로 5줄 이내**로 요약해라. 군더더기·칭찬 금지.\n\n"
                 f"[할 일]\n{task}")
             try:
-                out = debate.ask_claude(prompt, timeout=900, tools=tools, cwd=cwd)
+                out = agent_cli._ask_claude(prompt, agent_cli.RULES, agent_cli.FULL_TOOLS, agent_cli.DENY,
+                                            timeout=900, cwd=cwd)
             except Exception as e:
                 return {"ok": False, "msg": f"클로드 서브에이전트 실패: {str(e)[:200]}"}
-            text = f"🤖 서브에이전트(클로드) · {where}\n\n{out}"
-            if not shell_ok:
-                self._pending_shell = {"task": task, "target": target}
-                text += "\n\n(셸은 안 열어놨어. 명령을 돌려야 하면 '셸 허용'이라고 해 — 셸 켜고 다시 돌릴게.)"
-            return {"ok": True, "text": text}
+            return {"ok": True, "text": f"🤖 서브에이전트(클로드) · {where}\n\n{out}"}
 
         # ── 로컬 COMET-Coder ──
         import coder_bridge
@@ -1620,37 +1671,41 @@ class Comet:
                      + "\n'셸 허용'이라고 하면 셸 켜고 처음부터 다시 돌릴게.")
         return {"ok": True, "text": text}
 
+    # ── 맡기기 — 목록 밖의 「해 줘」를 클로드 코드(도구 켠 상태)에게 (agent_cli.py · 10/16) ──
+    #  파일 · 사진 보내기 신호 — 글 보내기(send_telegram)로 새면 안 되는 말
+    _FILE_SEND_KW = ("파일", "사진", "로고", "이미지", "그림", "스샷", "스크린샷", "캡처", "화면", "png", "pdf", "영상")
+
+    def _talk_context(self, n=8):
+        talk = []
+        for m in self.history.recent()[-n:-1]:      # 맨 끝은 방금 한 말이라 뺀다
+            who = "호윤" if m.get("role") == "user" else "코멧"
+            talk.append(f"{who}: {str(m.get('content', ''))[:400]}")
+        return "\n".join(talk)
+
+    def _agent(self, task, said=""):
+        """{ok, text} — 클로드 코드가 실제로 한 일. 텔레그램에서 온 말이면 읽기 · 찾기 · 웹 · 보내기만."""
+        import remote_guard
+        import agent_cli
+        remote = remote_guard.active()
+        if said and said.strip() != task.strip():
+            task = f"{task}\n(호윤이 한 말 그대로: {said.strip()})"
+        print(f"  [맡기기] 클로드 코드{' (텔레그램 · 읽기만)' if remote else ''} · {task[:70]}")
+        r = agent_cli.run(task, context=self._talk_context(), remote=remote)
+        if r.get("ok"):
+            print(f"  · {r.get('who')} 가 하고 돌아옴")
+        return r
+
     # ── 로컬이 못 뜰 때 구독 CLI 로 대신 답하기 ──────────────────
     def _cloud_reply(self, text):
-        """게임 중 VRAM 고갈 등으로 모델이 아예 안 올라올 때의 우회로.
-           브리핑의 클라우드 우회와 같은 배선 — API 키 과금이 아니라 호윤 구독 CLI 다.
-           도구·기억은 못 쓰니 아는 선에서만 답한다(그래서 실패를 숨기지 않고 우회했다고 알린다)."""
-        try:
-            import debate
-        except Exception:
-            return ""
-        talk = []
-        for m in self.history.recent()[-8:-1]:      # 맨 끝은 방금 한 말이라 뺀다
-            who = "호윤" if m.get("role") == "user" else "너"
-            talk.append(f"{who}: {str(m.get('content', ''))[:400]}")
-        prompt = (SYSTEM + "\n\n"
-                  "[지금은 로컬 모델이 못 떠서 네가 대신 답한다. 도구·파일·기억은 못 쓰니 아는 선에서 답하고,\n"
-                  " 확인이 필요한 건 모른다고 해라. 위 말투 그대로, 군더더기 없이 답만 내라.\n"
-                  " 코멧 코드를 고쳐 달라는 말이면 「클로드 코드를 열어라」 대신 코멧 명령을 알려 줘라 —\n"
-                  " 제안된 것은 「바로 고쳐」 · 「업그레이드 1」, 새로 시킬 건 「업그레이드 요청 <내용>」(시작은 PC 앞에서).]\n\n"
-                  + ("[최근 대화]\n" + "\n".join(talk) + "\n\n" if talk else "")
-                  + f"[방금 물어본 것]\n호윤: {text}")
-        for who, ask in (("클로드", lambda p: debate.ask_claude(p, timeout=120)),
-                         ("아스트라", lambda p: debate.ask_astra(p, timeout=180))):
-            try:
-                out = (ask(prompt) or "").strip()
-            except Exception as e:
-                print(f"  [우회] {who} 실패: {str(e)[:110]}")
-                continue
-            if out:
-                print(f"  · 로컬 모델이 못 떠서 {who} 로 우회했다")
-                print(f"\nCOMET: {out}")
-                return out
+        """게임 중 VRAM 고갈 · ollama 꺼짐 등으로 모델이 아예 안 올라올 때의 우회로 — 구독 CLI(API 키 과금 아님).
+           ★10/16 — 예전엔 도구를 다 끈 클로드를 불러서 「도구가 없다 · 노션 · 드라이브만 있다 · 뉴스 못 가져온다」고 답했다.
+             이제 맡기기(agent_cli)와 같은 길: 도구 켠 클로드 코드 → 막히면 아스트라. 텔레그램이면 읽기만."""
+        r = self._agent(text)
+        if r.get("ok"):
+            out = r["text"]
+            print(f"\nCOMET: {out}")
+            return out
+        print(f"  [우회] {r.get('msg', '')[:160]}")
         return ""
 
     # ── 도구 작업: 동작선택(JSON) → 실행 → 결과로만 답변 ─────────
@@ -1683,6 +1738,7 @@ class Comet:
             except Exception:
                 plan = {"action": "none"}
         action = plan.get("action", "none")
+        self._last_action = action          # respond 의 「말로만 했다」 거르기가 본다(10/16)
 
         # 긴 텍스트 붙여넣기 등을 게이트키퍼가 억지로 파일 도구에 꽂는 오분류 방지 —
         # path가 실제로 비어있으면 파일/폴더 요청이 아니었던 것이니 일반 대화로 되돌린다.
@@ -1707,6 +1763,8 @@ class Comet:
         elif action == "delegate":
             result = self._delegate((plan.get("task") or plan.get("query") or text).strip(),
                                     plan.get("target"))
+        elif action == "agent":
+            result = self._agent((plan.get("task") or plan.get("query") or text).strip(), text)
         elif action == "list_sources":
             result = projects.dispatch(action, {})
         elif action == "brief":
@@ -1750,6 +1808,11 @@ class Comet:
             print("  [보유] 화면 캡처 → 보유종목 읽는 중(클로드 → 아스트라 → 로컬 12b)…")
             import vision
             result = vision.read_holdings()
+        elif action == "send_telegram" and any(
+                k in (text + (plan.get("content") or "")).replace(" ", "") for k in self._FILE_SEND_KW):
+            # 파일 · 사진은 글 보내기로 못 보낸다 — 10/16 「로고 보내줘」에 글자 「텔레그램으로 보냈어」만 가고 보냈다고 답했다
+            action = "agent"
+            result = self._agent(text, text)
         elif action == "send_telegram":
             import notify
             content = (plan.get("content") or "").strip()
@@ -1799,7 +1862,7 @@ class Comet:
 
         # 3-위임) 서브에이전트가 한 일(고친 파일·진행 기록)은 사실 기록이다 — LLM 이 옮겨 적으면
         #   안 한 일을 했다고 쓰거나 파일명이 흐트러진다. 그대로 내보낸다(2026-09-22).
-        if action == "delegate" and result is not None and result.get("ok"):
+        if action in ("delegate", "agent") and result is not None and result.get("ok"):
             msg = result["text"]
             print(f"\nCOMET:\n{msg}")
             return msg

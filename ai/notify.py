@@ -129,6 +129,50 @@ def send(text: str, html_mode=True, part="", _try=1) -> dict:
     return {"ok": bool(res.get("ok")), "msg": "전송됨" if res.get("ok") else str(res), "tries": tries}
 
 
+PHOTO_EXT = (".png", ".jpg", ".jpeg", ".webp")
+
+
+def send_file(path: str, caption: str = "") -> dict:
+    """파일 · 사진을 텔레그램으로 (2026-10-16). 예전엔 글만 보낼 수 있어서 「로고 보내줘」에
+       글자 「텔레그램으로 보냈어」만 가고 보냈다고 답했다. 사진(10MB 미만)은 sendPhoto, 그 밖은 sendDocument."""
+    cfg = _load_cfg()
+    token, cid = cfg.get("token"), cfg.get("chat_id")
+    if not (token and cid):
+        return {"ok": False, "msg": "텔레그램 미설정 (token/chat_id 필요)"}
+    if not os.path.isfile(path):
+        return {"ok": False, "msg": f"파일이 없어: {path}"}
+    size = os.path.getsize(path)
+    if size > 50 * 1024 * 1024:
+        return {"ok": False, "msg": f"50MB 넘어서 텔레그램으로 못 보내: {os.path.basename(path)}"}
+    photo = path.lower().endswith(PHOTO_EXT) and size < 10 * 1024 * 1024
+    method, field = ("sendPhoto", "photo") if photo else ("sendDocument", "document")
+    boundary = "comet" + os.urandom(8).hex()
+    name = os.path.basename(path)
+    parts = []
+    for k, v in (("chat_id", cid), ("caption", (caption or "")[:1000])):
+        if v:
+            parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode("utf-8"))
+    with open(path, "rb") as f:
+        blob = f.read()
+    #  ★filename*=UTF-8''… (RFC 5987) 로 주면 텔레그램이 파일로 못 알아보고 글(URL)로 읽어 400 — 10/16 실측. 이름 그대로 넣는다
+    head = (f'--{boundary}\r\nContent-Disposition: form-data; name="{field}"; '
+            f'filename="{name.replace(chr(34), "")}"\r\n'
+            f'Content-Type: application/octet-stream\r\n\r\n').encode("utf-8")
+    body = b"".join(parts) + head + blob + f"\r\n--{boundary}--\r\n".encode("utf-8")
+    req = urllib.request.Request(API.format(token=token, method=method), data=body,
+                                 headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+    t0 = time.time()
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r:
+            res = json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        return {"ok": False, "msg": f"파일 전송 실패: {e} {e.read().decode('utf-8', 'ignore')[:200]}"}
+    except Exception as e:
+        return {"ok": False, "msg": f"파일 전송 실패: {e}"}
+    print(f"[텔레그램] 파일 {name} {'성공' if res.get('ok') else '실패'} {time.time() - t0:.1f}s", flush=True)
+    return {"ok": bool(res.get("ok")), "msg": f"텔레그램으로 {name} 보냈어." if res.get("ok") else str(res)[:200]}
+
+
 def _esc(s):
     return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
