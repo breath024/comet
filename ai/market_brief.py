@@ -25,6 +25,7 @@
 import re
 import json
 import time
+import threading
 from datetime import date, datetime, timedelta, timezone
 
 import ollama
@@ -665,7 +666,18 @@ def render(data, txt, brain, note=""):
         secs.pop()                       # 넘치면 덜 중요한 칸부터 뺀다(기사 → 그 외 종목 → …)
 
 
+BUSY = threading.Event()   # 브리핑 만드는 중 — 데몬 _work_now 가 보고 대화창 혜성을 켠다(10/16)
+
+
 def generate(model=BRIEF_MODEL, verbose=False, via="local", log=None):
+    BUSY.set()
+    try:
+        return _generate(model, verbose, via, log)
+    finally:
+        BUSY.clear()                   # 예외가 나도 꺼지게
+
+
+def _generate(model, verbose, via, log):
     """수집 → 해석 칸(JSON, 로컬 2패스 또는 클라우드 1패스) → 코드가 조립한 최종 브리핑.
 
     via="cloud" 면 로컬 26b 대신 구독 CLI(클로드→아스트라)로 1패스 생성한다.

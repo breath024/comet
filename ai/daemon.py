@@ -458,7 +458,8 @@ def _speak_async(text):
 def _work_now():
     """코멧이 지금 하고 있는 일 — /news 답에 실어 대화창이 혜성 애니메이션 · 머리말로 보여 준다
        (10/15 호윤 「뭔가 하고 있는 중일 때 배경에 혜성 … 그러면 작동하고 있는 거 알 듯」).
-       3초마다 불리니 가벼운 것만 본다 — 대화 줄 · 회의 · 이 데몬 안에서 도는 업그레이드."""
+       3초마다 불리니 가벼운 것만 본다 — 대화 줄 · 회의 · 이 데몬 안에서 도는 업그레이드 · 브리핑 · 소식 모으기.
+       앞에 있을수록 먼저(대화창은 이 순서대로 이어 붙인다)."""
     work = []
     with _cancel_lock:                             # Esc 로 멈춘 대화창 요청이 남은 계산을 마저 도는 중이면 일로 안 친다
         stopped = _chat_now is not None and _chat_now in _chat_dropped     # (10/15 Esc 뒤에도 혜성이 남았다)
@@ -474,6 +475,11 @@ def _work_now():
             work.append(f"업그레이드 · {j.get('step') or j.get('status')}")
     except Exception:
         pass
+    #  브리핑 · 소식 모으기(10/16) — 그 모듈이 이미 올라와 있을 때만 본다(3초마다 무거운 import 안 하게)
+    for mod, name in (("market_brief", "브리핑"), ("issues", "소식 모으기")):
+        m = sys.modules.get(mod)
+        if m is not None and getattr(m, "BUSY", None) is not None and m.BUSY.is_set():
+            work.append(name)
     return work
 
 
@@ -746,6 +752,9 @@ def main():
         os._exit(3)        # 3 = 코드 탓 아님(doctor.py 가 고치려 들지 않게) · 이미 띄운 자율모드 스레드(소식·말걸기·브리핑)까지 같이 내린다 — 포트 없이 알림만 울리지 않게
     # 떠 있는 동안 유휴 절전을 막는다(10/15 정전 뒤 로그인 화면에서 15분 만에 잠들어 밖에서 못 닿음). 끄면 윈도우 설정 그대로.
     print("[절전] 코멧이 떠 있는 동안 절전 막음" if headless.keep_awake() else "[절전] 막기 실패 — 윈도우 설정대로 잠든다")
+    # ollama 가 꺼져 있으면 시작할 때 한 번 켠다(10/16) — 떠 있으면 아무것도 안 함. 뒤에서(최대 20초 기다림)
+    import ollama_down
+    threading.Thread(target=ollama_down.start_ollama, daemon=True, name="ollama-start").start()
     srv.serve_forever()
 
 

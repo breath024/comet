@@ -10,8 +10,9 @@
 #  · 연결 거부만 켠다. VRAM 부족 · 500 · timed out 은 서버는 살아 있는 것이라 지금처럼(light 로 내리기 등).
 #  · 켜져 있는 동안 뒤에서 PROBE_SEC 마다 한 번 /api/tags 를 2초로 확인 → 살아나면 바로 풀고 한 줄 남긴다.
 #  · 꺼져 있으면 스스로 켠다(10/15 호윤 텔레그램 「올라마가 죽어있을 때 스스로 킬 수 있도록 고쳐」) — start_ollama().
-#    표시가 켜질 때 한 번 + 꺼져 있는 동안 RESTART_SEC 마다. ollama 프로세스가 이미 있으면(올라오는 중) 안 띄운다.
-#    로그인한 창 = 「ollama app.exe」(평소처럼 트레이 + serve) · 로그인 전(세션 0) = 「ollama.exe serve」. 끄지는 않는다.
+#    표시가 켜질 때 한 번 + 꺼져 있는 동안 RESTART_SEC 마다. 127.0.0.1:11434 가 열려 있으면 안 띄운다.
+#    로그인 창 · 세션 0 모두 shutil.which("ollama") 로 찾은 것을 「serve」로 — PATH 에 없으면 로그만. 끄지는 않는다.
+#    띄우고 START_WAIT 초 안에 답하면 표시를 바로 푼다. 데몬 시작 때도 한 번(10/16). 로그엔 세션 번호.
 #  · 주소는 ollama 파이썬 라이브러리와 같은 OLLAMA_HOST(없으면 127.0.0.1:11434) — comet·voice 의 Client 가 쓰는 곳.
 # ═══════════════════════════════════════════════════════════════
 import os
@@ -91,48 +92,70 @@ def mark(e):
     return True
 
 
-OLLAMA_DIR = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Ollama")
 RESTART_SEC = 300       # 꺼져 있는 동안 다시 띄워 보는 간격
 _last_start = 0.0
 
 
-def _ollama_running():
-    import subprocess
+def _port_open():
+    """127.0.0.1:11434 에 붙어 보기만 — 띄울지 말지는 이것 하나로 정한다(요청 ①)."""
+    import socket
     try:
-        r = subprocess.run(["tasklist", "/FI", "IMAGENAME eq ollama.exe", "/NH"], capture_output=True, text=True,
-                           timeout=10, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        return "ollama.exe" in (r.stdout or "").lower()
-    except Exception:
+        with socket.create_connection(("127.0.0.1", 11434), timeout=PROBE_TIMEOUT):
+            return True
+    except OSError:
         return False
 
 
+START_WAIT = 20        # 띄운 뒤 /api/tags 가 답할 때까지 기다리는 최대 시간 — 답하면 꺼짐 표시를 바로 푼다
+
+
+def _sid():
+    """로그에 찍을 세션 번호 — 세션 0(로그인 전 headless 데몬)에서도 같은 코드가 돈다."""
+    try:
+        import headless
+        return headless.session_id()
+    except Exception:
+        return "?"
+
+
 def start_ollama():
-    """ollama 를 띄운다. 띄웠으면 True. 최근에 띄웠거나 이미 프로세스가 있으면(올라오는 중) 안 띄운다."""
-    global _last_start
+    """ollama 를 띄운다. 띄웠으면 True. 최근(RESTART_SEC 안)에 시도했거나 127.0.0.1:11434 가 열려 있으면 안 띄운다.
+       떠 있는 ollama 는 끄거나 다시 띄우지 않는다. 데몬 시작 때도 한 번(daemon.main)."""
+    global _last_start, _down_since
+    import shutil
     import subprocess
     with _lock:
         if time.time() - _last_start < RESTART_SEC:
             return False
         _last_start = time.time()
-    if os.name != "nt" or _alive() or _ollama_running():
+    if os.name != "nt":
         return False
+    if _port_open():
+        print(f"  · [ollama 켜기] 이미 켜짐 (세션 {_sid()})")
+        return False
+    found = shutil.which("ollama")              # PATH 에서 찾은 것만 — 로그인 창이든 세션 0 이든 「ollama serve」
+    if not found:
+        print(f"  · [ollama 켜기] 못 켬: PATH 에 ollama 없음 (세션 {_sid()})")
+        return False
+    cmd = [found, "serve"]
     try:
-        import headless
-        if headless.HEADLESS:
-            cmd = [os.path.join(OLLAMA_DIR, "ollama.exe"), "serve"]
-        else:
-            cmd = [os.path.join(OLLAMA_DIR, "ollama app.exe")]
-        if not os.path.exists(cmd[0]):
-            print(f"  · [ollama 켜기] 실행 파일 없음: {cmd[0]}")
-            return False
-        subprocess.Popen(cmd, cwd=OLLAMA_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        subprocess.Popen(cmd, cwd=os.path.dirname(cmd[0]), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
                          | getattr(subprocess, "DETACHED_PROCESS", 0))
-        print(f"  · [ollama 켜기] 꺼져 있어서 띄움: {os.path.basename(cmd[0])}")
-        return True
     except Exception as e:
-        print(f"  · [ollama 켜기] 실패: {e}")
+        print(f"  · [ollama 켜기] 못 켬: {e} (세션 {_sid()})")
         return False
+    end = time.time() + START_WAIT
+    while time.time() < end:
+        time.sleep(1)
+        if _alive():
+            with _lock:
+                _down_since = 0.0              # 30초 확인을 안 기다리고 바로 로컬로 — 확인 스레드는 다음 바퀴에 알아서 빠진다
+            print(f"  · [ollama 켜기] 켬: {os.path.basename(cmd[0])} (세션 {_sid()})")
+            return True
+    print(f"  · [ollama 켜기] 못 켬: {os.path.basename(cmd[0])} 띄웠는데 {START_WAIT}초 안에 /api/tags 응답 없음 "
+          f"(세션 {_sid()}) — 꺼짐 표시는 그대로, {PROBE_SEC}초마다 계속 확인")
+    return True
 
 
 def _alive():
@@ -147,6 +170,10 @@ def _watch():
     global _down_since, _watching
     while True:
         time.sleep(PROBE_SEC)
+        with _lock:
+            if not _down_since:         # start_ollama 가 띄우고 이미 풀었다
+                _watching = False
+                return
         if _alive():
             with _lock:
                 took = int(time.time() - _down_since) if _down_since else 0

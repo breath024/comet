@@ -1597,6 +1597,7 @@ def replay(n=3, *, speak=True, show=True, log=print):
 #  한 번 점검 — 자율모드 스레드가 주기적으로 부른다
 # ═══════════════════════════════════════════════════════════════
 _check_lock = threading.Lock()
+BUSY = threading.Event()   # 소식 모으는 중 — 데몬 _work_now 가 보고 대화창 혜성을 켠다(10/16)
 
 
 def check(modes, **kw):
@@ -1605,7 +1606,11 @@ def check(modes, **kw):
        alive(): 거짓이면 알리지 않는다 — 수집(~10초) 도중에 '소식 듣기'를 껐을 때. 본 것 등록은 그대로.
        ★한 번에 하나 — '알림 지금'과 2분 점검이 겹치면 둘 다 같은 본 것 파일을 읽고 따로 알려 같은 걸 두 번 울렸다."""
     with _check_lock:
-        return _check(modes, **kw)
+        BUSY.set()
+        try:
+            return _check(modes, **kw)
+        finally:
+            BUSY.clear()               # 예외가 나도 꺼지게
 
 
 def _check(modes, *, gpu_busy_fn=None, quiet_hours=None, log=print, dry=False, baseline=False, alive=None):
