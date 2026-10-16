@@ -173,7 +173,7 @@ _comet.autonomy.modes["talk"].lock = _lock   # Alt 두 번 말걸기도 폰 요�
 _comet.autonomy.modes["telegram"].lock = _lock   # 텔레그램으로 온 질문도 같은 줄(답할 때마다 읽으니 복원 뒤에 꽂아도 된다)
 
 
-# ── 창을 X 로 닫아도, 줄여 둔 다른 앱 볼륨은 되돌리고 죽는다 ──
+# ── 창을 X 로 닫아도, 줄여 둔 다른 앱 볼륨은 되돌리고(+ 아야카 서버도 내리고) 죽는다 ──
 #   ★X 로 닫으면 파이썬 finally·atexit 이 안 돈다(그 자리에서 죽음). 코멧이 말하는 도중에 닫으면 다른 앱이
 #     20% 로 줄어든 채 남고, 다음에 데몬을 켤 때에야 아래 recover() 가 되돌렸다 — 로그의 '[덕킹] 지난번에
 #     줄인 채 끝난 앱 볼륨을 되돌림'(9/23 01:40 · 10/01 15:22 · 10/07 07:15). 10/07 은 06:02 에 말하는 도중
@@ -195,6 +195,13 @@ def _on_console_close(kind):
                 d.lock.release()
         if n:
             print(f"[덕킹] 끄는 중 — 줄여 둔 앱 볼륨 {n}개 되돌림")
+    except Exception:
+        pass
+    # 아야카 서버는 따로 사는 프로세스라 창을 닫아도 남는다(10분 내림 타이머는 데몬과 같이 죽음) — 같이 내린다(10/17).
+    #   재시작(종료 코드 75 · TerminateProcess)은 이 처리기를 안 지나서 서버를 그대로 둔다.
+    try:
+        if _voice.stop_ayaka_server():
+            print("[아야카] 끄는 중 — 목소리 서버도 내림")
     except Exception:
         pass
     return False

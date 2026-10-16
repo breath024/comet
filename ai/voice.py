@@ -692,6 +692,21 @@ def _ayaka_idle_stop():
         _ayaka_gate.release()
 
 
+def stop_ayaka_server(timeout=2.0):
+    """서버에게 스스로 내려가라고(/control?command=exit) — 안 기다린다. 떠 있었으면 True.
+    데몬 창을 닫을 때(10/17 · 호윤 「창 닫을 때 같이 내리게」) — 10분 타이머는 데몬과 같이 죽으니 서버만 남던 것."""
+    global _AYAKA_SPAWNED
+    if not _ayaka_port_open():
+        return False
+    import urllib.request
+    try:
+        urllib.request.urlopen(AYAKA_URL.rsplit("/", 1)[0] + "/control?command=exit", timeout=timeout)
+    except Exception:
+        pass                       # 서버가 그 자리에서 꺼지며 연결을 끊는다 — 오류가 나는 게 정상
+    _AYAKA_SPAWNED = False
+    return True
+
+
 def ayaka_idle_watch():
     """데몬 켤 때 — 미리 띄우지 않는다. 옛 데몬이 띄워 둔 서버가 떠 있으면 그것도 안 쓰면 내리게 건다."""
     if TTS_ENGINE == "ayaka" and _ayaka_port_open():
