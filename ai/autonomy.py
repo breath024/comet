@@ -496,6 +496,7 @@ class TalkMode(_Mode):
         self._busy = threading.Lock()  # 듣는 중에 또 톡톡 → 무시
         self._tid = None
         self._ear = None
+        self._unload_timer = None
 
     def available(self):
         if os.name != "nt":
@@ -517,6 +518,11 @@ class TalkMode(_Mode):
 
     LOG_FILE = os.path.join(_DIR, "talk.log")
     START_TIMEOUT = 6          # 창 뜨고 이 안에 말도 타이핑도 없으면 닫는다
+    # Whisper 는 켤 때 미리 안 올리고 처음 Alt 두 번 때 올린다 · 마지막 말걸기 뒤 이만큼(초) 안 쓰면 내린다(10/16).
+    #   호윤 「7기가 안 잡게」 — turbo 를 올려 두면 데몬이 7GB(GPU 몫 예약) · 내리면 2.4GB(torch 는 한 번 올리면 못 내림).
+    #   9/18 뒤로 말로 한 적이 없는데 켤 때마다 올려 두고 있었다. 대신 첫 말걸기는 올리는 동안 4~6초 기다린다.
+    #   설정 talk.unload_after(초) · 0 이면 안 내림.
+    IDLE_UNLOAD = 600
 
     def _trace(self, msg):
         """데몬 창은 내가(클로드가) 못 본다 — 어디서 멈췄는지 파일에도 남긴다."""
@@ -528,8 +534,36 @@ class TalkMode(_Mode):
         except Exception:
             pass
 
+    def _schedule_unload(self):
+        if self._unload_timer:
+            self._unload_timer.cancel()
+        sec = float(self.cfg.get("unload_after", self.IDLE_UNLOAD))
+        if sec <= 0 or self._ear is None:
+            return
+        self._unload_timer = threading.Timer(sec, self._unload)
+        self._unload_timer.daemon = True
+        self._unload_timer.start()
+
+    def _unload(self):
+        if not self._busy.acquire(blocking=False):    # 그 사이 또 말 거는 중 — 끝나면 다시 잰다
+            return
+        try:
+            if self._ear is None:
+                return
+            self._ear = None
+            import gc
+            gc.collect()
+            try:
+                import torch
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
+            self._trace("귀 내림 — 한동안 안 씀(다음 말걸기 때 다시 올림)")
+        finally:
+            self._busy.release()
+
     def _preload(self):
-        """Whisper 는 처음 올리는 데 몇 초 — 모드 켤 때 미리 올려둔다."""
+        """Whisper 는 처음 올리는 데 몇 초 — 첫 말걸기 때 올린다(켤 때 미리 올리던 건 10/16 뺌)."""
         try:
             import voice
             ear = voice.Ear()
@@ -644,6 +678,7 @@ class TalkMode(_Mode):
         finally:
             if ducked:
                 voice.ducker.off()
+            self._schedule_unload()
             self._busy.release()
 
     def _run(self):
@@ -696,8 +731,6 @@ class TalkMode(_Mode):
             return
         self._tid = k32.GetCurrentThreadId()
         self._trace("가동 — Alt 두 번 누르면 말걸기 창")
-        if self._ear is None:
-            threading.Thread(target=self._preload, name="talk-preload", daemon=True).start()
         try:
             msg = wintypes.MSG()
             while not self._stop.is_set() and u32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
