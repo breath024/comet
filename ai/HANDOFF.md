@@ -107,7 +107,7 @@ A.B.B.Y.S 프로젝트의 두뇌 레이어 (VOID의 형제).
 ## 목소리·말걸기·소식·회의 (지금 동작)
 - **목소리 = 아야카**(GPT-SoVITS v2Pro 파인튜닝, 저장소 밖 `A.B.B.Y.S\gpt-sovits\`). `voice.py` 가 api_v2 서버(127.0.0.1:9880)를 부른다.
   **미리 안 띄움**(10/17) — 말할 때 없으면 띄우고(그 말은 Edge, 8초쯤) 마지막 말 뒤 `AYAKA_IDLE_STOP`(600초) 지나면 `/control?command=exit` 로 내림
-  (켤 때 이미 떠 있으면 `ayaka_idle_watch` 가 타이머만) · 굳으면(400 CUDA 오류) `/control?command=exit` 로 내리고 다시 띄움(`heal_ayaka`, 10분에 한 번,
+  (켤 때 이미 떠 있으면 `ayaka_idle_watch` 가 타이머만 · 데몬 창을 닫으면 `stop_ayaka_server` 로 같이 내림) · 굳으면(400 CUDA 오류) `/control?command=exit` 로 내리고 다시 띄움(`heal_ayaka`, 10분에 한 번,
   `AYAKA_SELF_HEAL`) · 합성 전 GPU 여유가 `AYAKA_NEED_MB`(1500) 밑이면 ollama 모델을 내리고(`_room_for_ayaka`) 그래도 모자라면 그 말만 Edge ·
   무음 응답은 Edge. 음량 0.19(×1.7 아야카 보정). 숫자는 `speak_numbers()` 로 한글화. 말할 때 화면 형체 `orb.py`.
 - **Esc = 그만** — 코멧이 말하는 동안은 어느 창이 앞에 있든 멈춘다(`voice._EscWatch`, 줄 선 말·2초 안 이어지는 말도 취소).
@@ -247,7 +247,7 @@ A.B.B.Y.S 프로젝트의 두뇌 레이어 (VOID의 형제).
 ① **길찾기/대중교통**(카카오·네이버 지도 API, 키 발급 필요 — 버스 경로·정류장 겹침 같은 실시간은 웹검색으론 안 됨) ② 시세 확장(코스피·환율 더 많은 통화·국내주식 by 이름 — prices.py에 한 줄씩 추가) ~~③ 웹검색 자동발동~~ ✅완료(2026-06-20) ④ 도구 비교(multi-action) ④ Only Money(iCloud HTML) 연결 ⑤ iOS 음성입력(서버 Whisper+ffmpeg) ⑥ profile 자동 동기화 ⑦ 화면인식 정밀도(27b 옵션) ⑧ 데몬 자동 시작(부팅 시) ⑨ 뉴스 알림 디스코드 웹훅 연결 + 상시 스케줄러 ⑩ **데몬 watchdog**(부팅 자동시작 + 죽으면 재시작) — '항상 켜져 있기'(autonomy의 토대, 아직 미구현). + **자율모드 활성화**: proactive용 watchlist 키워드 등록 명령 + 텔레그램 chat_id 연결 명령, wake용 openwakeword 설치 후 리스너 실측. ~~vision/analyst 출력상한+타임아웃~~ ✅2026-06-24 완료 ⑪ 환각 다듬기: projects.py가 '파일없음'과 '거래 0건'을 구분해 반환(모델이 옛 80% 승률 안 꺼내게) ~~⑫ **이미지 역검색 폰(데몬) 입력**~~ ✅2026-06-29 완료 — daemon.py `/imgsearch`(base64) 엔드포인트 + 폰 웹UI 📷 버튼. 위 '이미지 역검색' 항목 끝의 '폰 입력 추가' 참고. ⑬ 이미지 역검색 A단 키 발급(SerpAPI 월100 무료 or serper) → `imagesearch_config.json`에 넣기만 하면 진짜 원본추적 켜짐.
 
 ## 기록
-- `logs/2026-10-17-log.md` — 아야카 서버 쓸 때만 띄우고 10분 뒤 내림
+- `logs/2026-10-17-log.md` — 아야카 서버 쓸 때만 띄우고 10분 뒤 내림 · 공개 푸시(제품명 예시 바꿈) · 창 닫을 때 아야카도 내림
 - `logs/2026-10-16-log.md` — 맡기기(agent_cli) · 보낸 글 기록(outbox) · (23:40) 메모리 확보 · 말걸기 Whisper 늦게 올리기 · Stop-Process 로 재시작한 것
 - `logs/2026-10-15-log.md` — 업그레이드 상태 적용 표시 · 코멧 닥터(doctor.py) · 자동 적용(분류기에 막혔다 호윤 허락) · 말로 제안(「취소」 오판 고침) · 대화창 혜성 · Esc 뒤 혜성 남음 고침
 - `logs/2026-10-14-log.md` — 코멧 로그 점검 · 텔레그램 말 대화창에 · 말로 할일 닫기 · 업그레이드 남은 지적 고치기 · 스스로 재시작(restart.py · run_daemon.bat 75)
