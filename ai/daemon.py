@@ -227,7 +227,7 @@ except Exception as _e:
 try:
     if headless.HEADLESS:
         raise RuntimeError("로그인 전 — 소리 장치 없음")
-    _voice.warm_ayaka()           # 목소리 서버를 미리 — 첫 말이 Edge 로 새지 않게(서버는 데몬과 따로 산다)
+    _voice.ayaka_idle_watch()     # 목소리 서버는 미리 안 띄운다(10/17 · 6GB) — 떠 있으면 안 쓸 때 내리게만
 except Exception as _e:
     print(f"[아야카] 미리 띄우기 건너뜀: {_e}")
 

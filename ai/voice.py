@@ -527,6 +527,7 @@ def start_ayaka_server(force=False):
                      cwd=root, env=env, stdout=log, stderr=log,
                      creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     print("  [아야카] 서버 띄우는 중 — 이번 말은 Edge 로")
+    _ayaka_touch()                 # 띄워 놓고 안 쓰면 그것도 내린다
 
 
 def warm_ayaka(log=print):
@@ -634,8 +635,79 @@ def _room_for_ayaka():
     return False
 
 
+# ── 안 쓰면 내린다 (2026-10-17 · 호윤 「아야카 서버도 그렇게 바꿔줘」 — 말걸기 Whisper 와 같은 방식) ──
+#   서버는 떠 있기만 해도 약 6GB(대부분 GPU 몫 예약 · 실제 램은 0.2GB 안팎)를 잡는다.
+#   데몬 켤 때 미리 띄우던 것(warm_ayaka)을 빼고, 말할 때 없으면 띄우고(그 말은 Edge),
+#   마지막 말 뒤 AYAKA_IDLE_STOP 초 안 쓰면 /control?command=exit 로 내린다. 0 이면 안 내림.
+#   대신 한동안 쉬다 처음 하는 말은 Edge 목소리.
+AYAKA_IDLE_STOP = 600
+_ayaka_last = 0.0
+_ayaka_gate = threading.Lock()     # 합성 중엔 안 내리고, 내리는 중엔 합성 안 함
+_ayaka_timer_lock = threading.Lock()
+_ayaka_timer = None
+
+
+def _ayaka_touch():
+    global _ayaka_last
+    _ayaka_last = time.time()
+    _ayaka_idle_arm(AYAKA_IDLE_STOP)
+
+
+def _ayaka_idle_arm(sec):
+    global _ayaka_timer
+    if AYAKA_IDLE_STOP <= 0:
+        return
+    with _ayaka_timer_lock:
+        if _ayaka_timer:
+            _ayaka_timer.cancel()
+        _ayaka_timer = threading.Timer(sec, _ayaka_idle_stop)
+        _ayaka_timer.daemon = True
+        _ayaka_timer.start()
+
+
+def _ayaka_idle_stop():
+    global _AYAKA_SPAWNED
+    left = AYAKA_IDLE_STOP - (time.time() - _ayaka_last)
+    if left > 1:
+        _ayaka_idle_arm(left)
+        return
+    if not _ayaka_gate.acquire(blocking=False):      # 지금 합성 중 — 조금 뒤 다시
+        _ayaka_idle_arm(30)
+        return
+    try:
+        if not _ayaka_port_open():
+            _AYAKA_SPAWNED = False
+            return
+        import urllib.request
+        try:
+            urllib.request.urlopen(AYAKA_URL.rsplit("/", 1)[0] + "/control?command=exit", timeout=5)
+        except Exception:
+            pass                   # 서버가 그 자리에서 꺼지며 연결을 끊는다 — 오류가 나는 게 정상
+        dead = time.time() + 15
+        while time.time() < dead and _ayaka_port_open():
+            time.sleep(0.3)
+        _AYAKA_SPAWNED = False     # 다음 말이 '연결 거부'를 보면 다시 띄운다
+        print(f"  [아야카] {AYAKA_IDLE_STOP // 60}분 안 써서 서버 내림 — 다음 말 때 다시 띄움(그 말은 Edge)")
+    finally:
+        _ayaka_gate.release()
+
+
+def ayaka_idle_watch():
+    """데몬 켤 때 — 미리 띄우지 않는다. 옛 데몬이 띄워 둔 서버가 떠 있으면 그것도 안 쓰면 내리게 건다."""
+    if TTS_ENGINE == "ayaka" and _ayaka_port_open():
+        _ayaka_touch()
+
+
 def synth_ayaka(text: str, timeout: float = 30.0):
     """아야카 서버에 합성 요청 → (파형, 샘플레이트). 서버가 없거나 실패하면 None."""
+    with _ayaka_gate:
+        got = _synth_ayaka(text, timeout)
+    if got is not None:
+        _ayaka_touch()
+    return got
+
+
+def _synth_ayaka(text: str, timeout: float = 30.0):
     import io
     import urllib.error
     import urllib.request
