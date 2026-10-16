@@ -1430,6 +1430,8 @@ def _post_feed(cat, items):
             fid = FEED[-1]["id"] + 1
         FEED.append({"id": fid, "cat": cat, "level": top["level"], "text": "\n".join(lines)})
         del FEED[:-FEED_KEEP]
+    import outbox                       # 화면 · 목소리로 알린 소식도 코멧이 알게(10/16)
+    outbox.record("화면 소식", "\n".join(lines))
 
 
 def post_note(cat, text):

@@ -2,3 +2,4 @@ phone/logs/
 phone/numbers.json
 headless.pid
 headless_stop.flag
+outbox.jsonl

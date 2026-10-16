@@ -94,7 +94,8 @@ def _log_try(part, k, ok, sec):
         pass
 
 
-def send(text: str, html_mode=True, part="", _try=1) -> dict:
+def send(text: str, html_mode=True, part="", _try=1, record=True) -> dict:
+    #  record — 보낸 글을 outbox 에 남긴다(대화 밖에서 나간 걸 코멧이 알게 · 10/16). 대화 답은 이미 기록에 있어 False
     cfg = _load_cfg()
     token, cid = cfg.get("token"), cfg.get("chat_id")
     if not (token and cid):
@@ -114,7 +115,7 @@ def send(text: str, html_mode=True, part="", _try=1) -> dict:
         # 태그가 깨진 글(모델이 쓴 '<', 4000자에서 잘린 태그)은 400 "can't parse entities" 로
         # 통째로 거절된다 — 그대로 두면 같은 글로 재시도만 돈다. 태그를 벗겨 한 번 더 보낸다.
         if html_mode and "parse entities" in body:
-            r = send(_plain(text), html_mode=False, part=part, _try=_try + 1)
+            r = send(_plain(text), html_mode=False, part=part, _try=_try + 1, record=record)
             if r.get("ok"):
                 r["msg"] = "전송됨(HTML 거절 → 맨글로)"      # 로그에서 모양이 깨졌다는 걸 알 수 있게
             r["tries"] = tries + r.get("tries", [])
@@ -126,6 +127,9 @@ def send(text: str, html_mode=True, part="", _try=1) -> dict:
         return {"ok": False, "msg": f"전송 실패: {e}", "tries": tries}
     tries = [(bool(res.get("ok")), time.time() - t0)]
     _log_try(part, _try, *tries[0])
+    if record and res.get("ok"):
+        import outbox
+        outbox.record("텔레그램", _plain(text))
     return {"ok": bool(res.get("ok")), "msg": "전송됨" if res.get("ok") else str(res), "tries": tries}
 
 
@@ -170,6 +174,9 @@ def send_file(path: str, caption: str = "") -> dict:
     except Exception as e:
         return {"ok": False, "msg": f"파일 전송 실패: {e}"}
     print(f"[텔레그램] 파일 {name} {'성공' if res.get('ok') else '실패'} {time.time() - t0:.1f}s", flush=True)
+    if res.get("ok"):
+        import outbox
+        outbox.record("텔레그램 파일", f"{name} ({path})" + (f" — {caption}" if caption else ""))
     return {"ok": bool(res.get("ok")), "msg": f"텔레그램으로 {name} 보냈어." if res.get("ok") else str(res)[:200]}
 
 
@@ -234,7 +241,7 @@ def md_to_tg(md):
     return "\n".join(out)
 
 
-def send_long(md, limit=3500):
+def send_long(md, limit=3500, record=True):
     """긴 답을 문단 경계에서 나눠 차례로 보낸다(한 통 4096자 한도). 나눈 뒤에 HTML 로 바꿔 태그가 안 잘리게."""
     chunks, cur = [], ""
     for para in (md or "").split("\n\n"):
@@ -257,7 +264,7 @@ def send_long(md, limit=3500):
     res, times = [], []                                # times = 조각마다 (글자 수, 걸린 초, 시도 목록)
     for i, c in enumerate(chunks, 1):
         t0 = time.time()
-        r = send(md_to_tg(c), part=f" 조각 {i}/{len(chunks)} {len(c)}자")
+        r = send(md_to_tg(c), part=f" 조각 {i}/{len(chunks)} {len(c)}자", record=record)
         res.append(r)
         times.append((len(c), time.time() - t0, r.get("tries", [])))
     return {"ok": bool(res) and all(r.get("ok") for r in res), "parts": len(res),

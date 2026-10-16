@@ -842,7 +842,7 @@ class TelegramMode(_Mode):
         reply = self._answer(text)
         t_send = time.time()
         self._mark("보내기 시작")              # 조각 · 시도마다는 notify.send 가 그 자리에서 찍는다
-        r = notify.send_long(reply)
+        r = notify.send_long(reply, record=False)      # 대화 답은 이미 대화 기록에 있다(outbox 겹침 방지)
         t_end = time.time()
         self._mark("보내기 끝")
         self.log(f"[텔레그램] 답: {reply[:500]}" + (f" …(전체 {len(reply)}자)" if len(reply) > 500 else ""))
