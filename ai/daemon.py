@@ -221,6 +221,34 @@ def _hook_console_close():
     return bool(k32.SetConsoleCtrlHandler(_CTRL_HANDLER, True))
 
 
+# ── 콘솔 빠른 편집 끄기(10/19) ──
+#   데몬 창을 마우스로 누르면 「선택」 모드가 되고, 그동안 이 창에 print 하는 스레드가 전부 멈춘다.
+#   10/19 18:02 창이 「선택 COMET 데몬」인 채로 /chat 이 '[요청] …' 한 줄 찍다 7분 막힘 → 대화창 · 업그레이드 답 전부 안 옴.
+#   창(콘솔)은 doctor.py 와 같이 쓰므로 여기서 한 번 끄면 그 창 전체에 먹는다. 휠 스크롤 · Enter 입력은 그대로,
+#   글 복사는 창 메뉴(왼쪽 위 아이콘 → 편집 → 표시)로 — 그때도 멈추니 다 끝나면 Esc.
+def _no_quick_edit():
+    if os.name != "nt":
+        return False
+    import ctypes
+    from ctypes import wintypes
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateFileW.restype = wintypes.HANDLE
+    k32.CreateFileW.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+                                wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE)
+    # stdin 이 파이프여도 창에 붙은 입력 버퍼를 직접 연다 · 로그인 전(세션 0)처럼 창이 없으면 여기서 실패 → 그냥 넘어감
+    h = k32.CreateFileW("CONIN$", 0xC0000000, 0x3, None, 3, 0, None)   # 읽기쓰기 · 공유 · OPEN_EXISTING
+    if not h or h == wintypes.HANDLE(-1).value:
+        return False
+    try:
+        mode = wintypes.DWORD()
+        if not k32.GetConsoleMode(h, ctypes.byref(mode)):
+            return False
+        # 0x40 빠른 편집 끔 · 0x80 EXTENDED_FLAGS 를 같이 줘야 0x40 을 바꾼 게 먹는다
+        return bool(k32.SetConsoleMode(h, (mode.value & ~0x0040) | 0x0080))
+    finally:
+        k32.CloseHandle(h)
+
+
 try:
     import voice as _voice
     if headless.HEADLESS:
@@ -231,6 +259,11 @@ try:
         print("[덕킹] 창 닫기 처리기를 못 걸었다 — 말하는 도중 닫으면 다음에 켤 때 되돌린다")
 except Exception as _e:
     print(f"[덕킹] 복구 건너뜀: {_e}")
+try:
+    if _no_quick_edit():
+        print("[창] 빠른 편집 끔 — 창을 눌러도 데몬이 안 멈춤")
+except Exception as _e:
+    print(f"[창] 빠른 편집 끄기 건너뜀: {_e}")
 try:
     if headless.HEADLESS:
         raise RuntimeError("로그인 전 — 소리 장치 없음")
