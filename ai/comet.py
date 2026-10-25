@@ -910,6 +910,12 @@ def _is_local_down(e):
 _CLAIM_DONE = re.compile(r"(보냈|전송했|전송됐|삭제했|삭제됐|지웠|저장했|켰어|켰습니다|껐어|껐습니다|실행했|옮겼|"
                          r"고쳤|수정했|적용했|적용됐|처리했|패치했|추가했)")
 
+# 「모르겠다 · 못 찾았다」 말투 — 로컬이 짧게 이렇게 끝나면 클로드로 한 번 더(호윤 10/26 「올라마가 답 못했다고 우회답을 하진 않더라고」)
+_UNANSWERED = re.compile(r"(모르겠|확인할 수 없|확인이 어렵|확인할 방법이 없|알 수 없|찾지 못|못 찾았|못 찾겠|"
+                         r"정보가 없|자료가 없|답하기 어렵|답할 수 없|접근할 수 없|접근 권한|권한이 없|도구가 없|"
+                         r"기능이 없|할 수 없어|할 수 없습니다|못 가져|결과를 못)")
+UNANSWERED_MAX = 260      # 이보다 긴 답은 「모른다」가 섞여도 내용이 있다고 본다
+
 
 # ═══════════════════════════════════════════════════════════════
 #  COMET 본체
@@ -1376,11 +1382,19 @@ class Comet:
 
         self.history.add("user", text)
         self._last_action = None
+        used_local = False            # 로컬 모델이 답했나 — 짧은 「모르겠다」면 끝에서 클로드로 한 번 더
 
+        import secnews
         try:
             if imgsearch:
                 print("  · 이미지 역검색 (식별→원본·출처추적)")
                 full = self._image_search(text)
+            elif not screen and secnews.is_security(text):
+                #  ★2026-10-26 — 보안 질문은 로컬을 건너뛴다(호윤 선택). 클로드는 웹만 · 지금 상태는 정해진 읽기 명령 하나로.
+                print("  · 보안 질문 — 로컬 건너뛰고 클로드(정해진 상태 읽기 + 웹)")
+                full = secnews.ask(text, talk=self._talk_context()) or self._cloud_reply(text)
+                if not full:
+                    return "[오류] 보안 질문 — 클로드 · 아스트라 둘 다 답을 못 받았어."
             elif ollama_down.is_down():
                 #  ★2026-10-14 — 연결 거부가 한 번 났으면 살아날 때까지 문지기 · light 를 안 거친다(ollama_down.py)
                 #    화면 인식(gemma4 vision)도 로컬이라 이 분기가 먼저다(아스트라 검토 지적)
@@ -1417,6 +1431,7 @@ class Comet:
                         return self._chat_with_tools(c, text)
                     return self._chat_stream(c)
 
+                used_local = True
                 try:
                     full = _run(cfg)
                 except Exception as e:
@@ -1436,9 +1451,17 @@ class Comet:
             #   게임 중 VRAM 이 없어 모델이 아예 못 뜨는 일이 잦다 — 그때 대화를 끊지 않고 우회한다
             ollama_down.mark(e)        # light · 화면 인식 쪽에서 난 연결 거부도 표시는 켠다
             full = self._cloud_reply(text) if _is_local_down(e) else ""
+            used_local = False
             if not full:
                 print(f"\n  [오류] 응답 실패: {e}")
                 return f"[오류] {e}"
+
+        # 로컬이 짧게 「모르겠다 · 못 찾았다」로 끝났으면 클로드로 한 번 더(10/26 · 텔레그램이면 읽기 · 웹만)
+        if used_local and full and len(full) <= UNANSWERED_MAX and _UNANSWERED.search(full):
+            print(f"\n  · 로컬이 못 답함 → 클로드로 한 번 더: {full[:60]}")
+            alt = self._cloud_reply(text)
+            if alt:
+                full = alt.rstrip() + "\n\n(로컬 모델이 못 답해서 클로드가 대신 답했어)"
 
         # 말로만 「했다」 거르기(10/16) — 도구를 안 탔는데 「보냈어 · 지웠어 · 켰어」라고 하면 거짓말이다.
         #   (16:06 로고 건은 글 보내기 도구를 탔지만 엉뚱한 걸 보냈다 → send_telegram 쪽에서 따로 막음)
