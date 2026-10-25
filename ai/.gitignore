@@ -3,3 +3,4 @@ phone/numbers.json
 headless.pid
 headless_stop.flag
 outbox.jsonl
+secnews_state.json

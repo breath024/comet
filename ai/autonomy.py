@@ -39,6 +39,9 @@ DEFAULTS = {
     # upgrade: 하루 한 번 hour 시 이후 고칠 거리를 찾아 제안 + 막힌 업그레이드 다시 시도. 로직은 upgrade.py
     #   호윤이 「스스로 찾아서 제안」을 골라서(10/13) 처음부터 켜 둔다. 반영은 호윤 「업그레이드 적용」 때만.
     "upgrade":   {"enabled": True, "hour": 13, "check_sec": 1800, "last_date": ""},
+    # secnews: 서브컴 취약점 감시가 보낸 보안 기사 → 클로드 분석 → 「해당? · 할 일」 텔레그램. 로직은 secnews.py
+    #   호윤이 「이런 거 오면 코멧이 분석해서 대응까지 알려 달라」고 해서(10/26) 처음부터 켜 둔다. 제안만 — 코멧이 직접 고치지 않는다.
+    "secnews":   {"enabled": True, "check_sec": 300},
 }
 
 
@@ -982,6 +985,36 @@ class UpgradeMode(_Mode):
                 self.log(f"[upgrade] 점검 오류: {e}")
 
 
+class SecNewsMode(_Mode):
+    name = "secnews"
+    desc = "서브컴 감시가 보낸 보안 기사를 클로드로 분석해 「해당? · 할 일」을 텔레그램으로"
+    MUTEX = "Local\\COMET_SECNEWS"
+
+    def __init__(self, cfg, log):
+        super().__init__(cfg, log)
+        self._mutex = None
+
+    def _run(self):
+        if self._mutex is None:
+            h = _named_mutex(self.MUTEX)
+            if h is False:
+                self.log("[secnews] 다른 COMET 이 맡고 있음 — 여기선 안 돎")
+                return
+            self._mutex = h
+        import secnews
+        check = max(120, int(self.cfg.get("check_sec", 300)))
+        self.log(f"[secnews] 가동 — {check // 60}분마다 서브컴 대기열 확인")
+        fails = 0
+        while not self._stop.wait(check):
+            try:
+                secnews.tick(log=self.log)
+                fails = 0
+            except Exception as e:
+                fails += 1
+                if fails in (1, 12):                 # 서브컴 · 인터넷이 잠깐 끊긴 건 로그만, 1시간 넘게 이어지면 한 번 더
+                    self.log(f"[secnews] 대기열 못 가져옴({fails}번째): {e}")
+
+
 def _named_mutex(name):
     """이 PC 에서 하나만 — 잡으면 핸들, 남이 잡고 있으면 False, 윈도우가 아니면 None(IssuesMode._single 과 같은 방식)."""
     if os.name != "nt":
@@ -1020,6 +1053,7 @@ class Autonomy:
             "telegram":  TelegramMode(self.cfg["telegram"], self.log,
                                       respond_fn=(lambda t: respond_fn(t, speak=False)) if respond_fn else None),
             "upgrade":   UpgradeMode(self.cfg["upgrade"], self.log, save_fn=lambda: _save_cfg(self.cfg)),
+            "secnews":   SecNewsMode(self.cfg["secnews"], self.log),
         }
 
     # 저장된 enabled 모드 복원(데몬/콘솔 시작 시 호출)
