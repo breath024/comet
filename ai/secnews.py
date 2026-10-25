@@ -147,6 +147,7 @@ PROMPT = """너는 호윤의 보안 담당 비서다. 아래 보안 기사가 �
  "why": "우리에게 해당 · 비해당인 근거 2~4문장. 확인한 건 어디서 봤는지, 추정은 끝에 (추정)",
  "actions": ["호윤이 할 일 한 줄씩, 최대 3개, 한 줄 40자 안팎. 명령어 · 메뉴 경로는 공식 문서에서 본 것만, 아니면 끝에 (확인 안 함)"],
  "fixed_version": "고친 버전(모르면 빈 문자열)",
+ "also": "기사와 별개로 찾은, 우리에게 해당하는 다른 공지 한 줄(예: 같은 제품의 다른 보안 공지). 없으면 빈 문자열",
  "sources": ["실제로 읽은 원문 · 공식 공지 주소"]}}
 """
 
@@ -192,9 +193,16 @@ def render(item, res, who):
         return (f"{head}\n⚠️ <b>분석 못 함</b>\n{_esc(item.get('title', ''))}\n"
                 f"<blockquote expandable>{_esc(who)}</blockquote>\n{link}")
     mark = {"영향 있음": "🔴", "영향 없음": "🟢"}.get(res["verdict"], "🟡")
-    lines = [head,
-             f"{mark} <b>{_esc(res['verdict'])}</b> · 급함 <b>{_esc(res.get('urgency', '?'))}</b>",
-             _esc(res.get("summary", "")), ""]
+    urg = res.get("urgency", "?")
+    #  「영향 없음 · 급함 이번 주」가 헷갈렸다(호윤 10/26) — 판정은 기사 결함 얘기, 급함은 할 일 얘기라 줄을 나눈다
+    lines = [head, f"{mark} 이 기사: <b>{_esc(res['verdict'])}</b>"]
+    if urg != "할 일 없음":
+        why = " · 별건 포함" if res.get("also") else ""
+        lines.append(f"⏰ 할 일: <b>{_esc(urg)}</b>{why}")
+    lines += [_esc(res.get("summary", ""))]
+    if res.get("also"):
+        lines.append(f"📌 별건: {_esc(res['also'])}")
+    lines.append("")
     if res["actions"]:
         lines.append("<b>할 일</b>")
         lines += [f"• {_esc(a)}" for a in res["actions"]]
